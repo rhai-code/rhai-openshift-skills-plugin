@@ -1,0 +1,6 @@
+apiVersion: v2
+name: openshift-skills-plugin
+description: OpenShift Console Plugin for scheduled agent skill execution via MaaS
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

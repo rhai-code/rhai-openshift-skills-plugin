@@ -1,0 +1,81 @@
+[
+  {
+    "type": "console.navigation/section",
+    "properties": {
+      "id": "skills",
+      "name": "Skills"
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/skills-plugin/chat",
+      "component": { "$codeRef": "ChatPage" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/skills-plugin/skills",
+      "component": { "$codeRef": "SkillsPage" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/skills-plugin/schedule",
+      "component": { "$codeRef": "SchedulePage" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/skills-plugin/settings",
+      "component": { "$codeRef": "SettingsPage" }
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "skills-chat",
+      "name": "Chat",
+      "href": "/skills-plugin/chat",
+      "perspective": "admin",
+      "section": "skills"
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "skills-manage",
+      "name": "Manager",
+      "href": "/skills-plugin/skills",
+      "perspective": "admin",
+      "section": "skills"
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "skills-schedule",
+      "name": "Schedule",
+      "href": "/skills-plugin/schedule",
+      "perspective": "admin",
+      "section": "skills"
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "skills-settings",
+      "name": "Settings",
+      "href": "/skills-plugin/settings",
+      "perspective": "admin",
+      "section": "skills"
+    }
+  }
+]
