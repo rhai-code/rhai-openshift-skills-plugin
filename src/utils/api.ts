@@ -180,6 +180,11 @@ export const listModels = (endpointId?: number) =>
 export const getHealth = () =>
   request<{ status: string; namespace: string }>('/health');
 
+export const getConfig = (key: string) =>
+  request<{ key: string; value: string }>('/config?key=' + encodeURIComponent(key));
+export const setConfig = (key: string, value: string) =>
+  request('/config?key=' + encodeURIComponent(key), { method: 'PUT', body: JSON.stringify({ value }) });
+
 // Database export/import
 export async function exportDatabase(): Promise<void> {
   const resp = await fetch(`${PROXY_BASE}/database/export`, {

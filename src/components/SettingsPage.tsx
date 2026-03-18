@@ -20,6 +20,7 @@ import {
   HelperText,
   HelperTextItem,
   TextInput,
+  TextArea,
   Label,
   Split,
   SplitItem,
@@ -37,6 +38,8 @@ import {
   healthCheckEndpoint,
   exportDatabase,
   importDatabase,
+  getConfig,
+  setConfig,
   MaaSEndpoint,
 } from '../utils/api';
 
@@ -53,11 +56,31 @@ export default function SettingsPage() {
   const [dbMessage, setDbMessage] = React.useState<{ type: 'success' | 'danger'; text: string } | null>(null);
   const [importing, setImporting] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [systemPrompt, setSystemPrompt] = React.useState('');
+  const [systemPromptSaved, setSystemPromptSaved] = React.useState(false);
 
-  React.useEffect(() => { loadEndpoints(); }, []);
+  React.useEffect(() => {
+    loadEndpoints();
+    loadSystemPrompt();
+  }, []);
 
   const loadEndpoints = async () => {
     try { setEndpoints(await listEndpoints() || []); } catch (e) { console.error(e); }
+  };
+
+  const loadSystemPrompt = async () => {
+    try {
+      const result = await getConfig('system_prompt');
+      setSystemPrompt(result.value || '');
+    } catch (e) { console.error(e); }
+  };
+
+  const handleSaveSystemPrompt = async () => {
+    try {
+      await setConfig('system_prompt', systemPrompt);
+      setSystemPromptSaved(true);
+      setTimeout(() => setSystemPromptSaved(false), 3000);
+    } catch (e) { console.error(e); }
   };
 
   const handleCreate = async () => {
@@ -124,7 +147,6 @@ export default function SettingsPage() {
       setDbMessage({ type: 'danger', text: 'Import failed: ' + e.message });
     }
     setImporting(false);
-    // Reset file input so the same file can be selected again
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -135,6 +157,53 @@ export default function SettingsPage() {
   return (
     <>
       <Helmet><title>Skills Settings</title></Helmet>
+
+        <PageSection>
+          <Title headingLevel="h1">System Prompt</Title>
+        </PageSection>
+        <PageSection>
+          <Card isCompact>
+            <CardBody>
+              <FormGroup label="Agent Instructions (always prepended, read-only)" fieldId="agent-instructions">
+                <TextArea
+                  id="agent-instructions"
+                  value={`You are an AI agent running on an OpenShift cluster.\nYou have access to the 'shell' tool to execute commands.\nUse 'oc' and 'kubectl' commands to interact with the cluster.\nExecute commands to get real data - do NOT fabricate or hallucinate results.\nOnly report what the commands actually return.\nIMPORTANT: For multi-line scripts or commands containing quotes, write the script to a temp file first using a heredoc, then execute it.`}
+                  rows={6}
+                  isDisabled
+                  aria-label="Agent instructions"
+                />
+              </FormGroup>
+              <FormGroup label="Custom System Prompt" fieldId="system-prompt" className="pf-v6-u-mt-md">
+                <TextArea
+                  id="system-prompt"
+                  value={systemPrompt}
+                  onChange={(_e, v) => { setSystemPrompt(v); setSystemPromptSaved(false); }}
+                  rows={4}
+                  placeholder="Add custom instructions here..."
+                  aria-label="System prompt"
+                />
+                <FormHelperText>
+                  <HelperText>
+                    <HelperTextItem>
+                      Applied to all new chat sessions and scheduled tasks. Appended after agent instructions, before skills.
+                    </HelperTextItem>
+                  </HelperText>
+                </FormHelperText>
+              </FormGroup>
+              <Split hasGutter className="pf-v6-u-mt-sm">
+                <SplitItem>
+                  <Button variant="primary" onClick={handleSaveSystemPrompt}>Save</Button>
+                </SplitItem>
+                {systemPromptSaved && (
+                  <SplitItem>
+                    <Alert variant="success" title="System prompt saved" isInline isPlain />
+                  </SplitItem>
+                )}
+              </Split>
+            </CardBody>
+          </Card>
+        </PageSection>
+
         <PageSection>
           <Split hasGutter>
             <SplitItem isFilled><Title headingLevel="h1">MaaS Endpoints</Title></SplitItem>
@@ -253,7 +322,7 @@ export default function SettingsPage() {
             <TextInput id="ep-name" value={name} onChange={(_e, v) => setName(v)} placeholder="My MaaS Endpoint" />
           </FormGroup>
           <FormGroup label="URL" isRequired fieldId="ep-url">
-            <TextInput id="ep-url" value={url} onChange={(_e, v) => setUrl(v)} placeholder="https://maas.example.com/maas-api orhttps://model.example.com/v1" />
+            <TextInput id="ep-url" value={url} onChange={(_e, v) => setUrl(v)} placeholder="https://maas.example.com/maas-api or https://model.example.com/v1" />
             <FormHelperText>
               <HelperText>
                 <HelperTextItem>MaaS API or OpenAI-compatible /v1 base URL</HelperTextItem>

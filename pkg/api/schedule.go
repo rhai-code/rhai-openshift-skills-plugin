@@ -301,6 +301,9 @@ Analyze the actual command output to provide an accurate report.
 Do NOT fabricate or hallucinate results - only report what the commands actually return.
 IMPORTANT: For multi-line scripts or commands containing quotes, write the script to a temp file using a heredoc (cat > /tmp/script.sh << 'SCRIPT' ... SCRIPT) then run sh /tmp/script.sh.
 When you have completed all the steps, provide a final summary of the results.`
+	if globalPrompt := GetSystemPrompt(); globalPrompt != "" {
+		systemPrompt += "\n\n" + globalPrompt
+	}
 	if skillContent != "" {
 		systemPrompt += "\n\n# Skill: " + skillName + "\n" + skillContent
 	}
@@ -390,6 +393,9 @@ Analyze the actual command output to provide an accurate report.
 Do NOT fabricate or hallucinate results - only report what the commands actually return.
 IMPORTANT: For multi-line scripts or commands containing quotes, write the script to a temp file using a heredoc (cat > /tmp/script.sh << 'SCRIPT' ... SCRIPT) then run sh /tmp/script.sh.
 When you have completed all the steps, provide a final summary of the results.`
+	if globalPrompt := GetSystemPrompt(); globalPrompt != "" {
+		systemPrompt += "\n\n" + globalPrompt
+	}
 	if skillContent != "" {
 		systemPrompt += "\n\n# Skill: " + skillName + "\n" + skillContent
 	}

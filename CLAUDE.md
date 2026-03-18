@@ -8,7 +8,7 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 - **`src/components/ChatPage.tsx`** - Interactive chat with agent loop (shell tool access in plugin pod). Renders markdown responses via `react-markdown` + `remark-gfm`. Per-session skill selection (expandable bar above messages, checkboxes in new chat modal). Active session highlighted in sidebar. Configurable temperature and max tokens per session.
 - **`src/components/SkillsPage.tsx`** - Upload/manage SKILLS.md knowledge files
 - **`src/components/SchedulePage.tsx`** - Schedule skills as cron jobs or run-once tasks with container image, SA, namespace, prompt, temperature, max token length. Toggle between recurring (cron) and run-once (delay notation: `now`, `+5m`, `+2h`).
-- **`src/components/SettingsPage.tsx`** - Configure MaaS endpoints (registry or single-model), export/import SQLite database
+- **`src/components/SettingsPage.tsx`** - Configure MaaS endpoints (registry or single-model), global system prompt, export/import SQLite database
 - **`src/components/styles.css`** - Chat message styling including markdown rendering (code, tables, blockquotes, lists)
 - **`src/utils/api.ts`** - API client with CSRF token handling (`X-CSRFToken` header from `csrf-token` cookie)
 - **`console-extensions.json`** - Plugin routes under `/skills-plugin/{chat,skills,schedule,settings}` in admin perspective "Skills" nav section
@@ -30,6 +30,7 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
     - **Model registry** (e.g. `http://maas.example.com/v1`) → lists models via `GET /v1/models`, returns per-model inference URLs
     - **Single-model URL** (e.g. `http://maas.example.com/prelude-maas/llama-32-3b/v1`) → auto-detected by `IsSingleModelURL()`, queries `GET {url}/models` to get model ID, shown as "Single model: name" in UI
     - API keys are never returned to the frontend (masked as `"****"`)
+  - `config.go` - `GET/PUT /api/config?key=` for key-value config (e.g. `system_prompt`). `GetSystemPrompt()` helper used by session creation and scheduled task execution.
   - `helpers.go` - `jsonResponse()`, `httpError()`
 - **`pkg/agent/agent.go`** - LLM-driven agent loop (OpenAI-compatible tool calling API):
   - `RunAgentLoop(completionsURL, token, model, systemPrompt, userMessage string, maxIterations int, shellExec ShellExecutor, opts *AgentOptions) (string, error)`
@@ -70,7 +71,7 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 ### Helm Chart (`chart/`)
 - **`consoleplugin.yaml`** - ConsolePlugin CR (v1 API) with proxy: `endpoint.type: Service`, `authorization: UserToken`
 - **`deployment.yaml`** - Sets `POD_NAMESPACE` via downward API, TLS from serving cert secret, PVC for SQLite data
-- **`rbac.yaml`** - ClusterRole with: batch jobs CRUD, pods create/delete, pods/log get, pods/exec create, serviceaccounts/namespaces list
+- **`rbac.yaml`** - ClusterRole for batch jobs CRUD, serviceaccounts/namespaces list; namespace-scoped Role for pods create/delete, pods/log get, pods/exec create
 - **`enable-plugin.yaml`** - Post-install/upgrade hook Job that patches Console CR to enable plugin (avoids ownership conflicts with other operators)
 - **`values.yaml`** - Image: `quay.io/eformat/openshift-skills-plugin:latest`, PVC 2Gi, TLS enabled
 
@@ -90,6 +91,11 @@ helm upgrade --install skills-plugin chart/ -n skills-plugin --create-namespace
 - **Per-session skills**: Each chat session can have specific skills selected via the `session_skills` junction table. New chats pre-select all enabled skills. Skills can be changed on an active session via the expandable skills bar. If no skills are explicitly selected (e.g. old sessions), falls back to loading all enabled skills.
 - **Multi-turn chat context**: `SendMessage` passes full conversation history from the DB to `RunAgentLoop` via `AgentOptions.History`, giving the LLM multi-turn context within a session while keeping sessions isolated from each other.
 - **Run-once tasks**: Scheduled tasks can be set to "Run Once" mode with a delay (`now`, `+5m`, `+2h`). Uses `time.AfterFunc` instead of cron. After execution, the task is automatically disabled (`enabled = 0`). The cron schedule field stores a placeholder value for run-once tasks.
+- **System prompt layering**: The full system prompt sent to the LLM is built in three layers:
+  1. **Agent instructions** (hardcoded, read-only) — always prepended: shell tool usage, don't hallucinate, use temp files for scripts. Shown as a disabled read-only TextArea in Settings so users can see it.
+  2. **Global system prompt** (configurable in Settings) — stored in the `config` table as `system_prompt`, with a sensible default defined in `DefaultSystemPrompt`. Applied to all new chat sessions (baked in at creation time) and all scheduled task executions (read at runtime via `GetSystemPrompt()`).
+  3. **Skills content** — appended last, per-session or per-task.
+- **Shell tool JSON repair**: `repairToolCallJSON()` in agent.go attempts to fix truncated/malformed JSON in LLM-generated tool call arguments (common with smaller models producing unescaped quotes in shell commands). The shell tool description also instructs models to write complex scripts to temp files via heredocs to avoid escaping issues.
 - **Per-session LLM settings**: Each chat session stores its own `temperature` and `max_tokens` (defaults 0.2 and 2048), passed to `RunAgentLoop` via `AgentOptions`.
 - **Token security**: API keys are never returned to the frontend. `ScheduledTask.APIKey` uses `json:"-"`, `ListEndpoints` returns `"****"`, Settings UI shows "Configured"/"Not set".
 - **Database portability**: Export/import of the SQLite database file via Settings page for migrating config between clusters. Import triggers `Reinit()` + `ReloadScheduler()`.

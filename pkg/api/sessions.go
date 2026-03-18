@@ -39,6 +39,10 @@ func CreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.Temperature <= 0 {
 		req.Temperature = 0.2
 	}
+	// Use global system prompt as default if not explicitly set
+	if req.SystemPrompt == "" {
+		req.SystemPrompt = GetSystemPrompt()
+	}
 	db := database.GetDB()
 	_, err := db.Exec("INSERT INTO sessions (id, name, provider, model, base_url, system_prompt, temperature, max_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		id, name, req.Provider, req.Model, req.BaseURL, req.SystemPrompt, req.Temperature, req.MaxTokens)
