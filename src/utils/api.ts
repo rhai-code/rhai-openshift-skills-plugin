@@ -113,6 +113,8 @@ export interface ScheduledTask {
   container_image?: string;
   temperature: number;
   max_tokens: number;
+  run_once: boolean;
+  run_once_delay?: string;
   created_at: string;
 }
 

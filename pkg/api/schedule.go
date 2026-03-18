@@ -19,13 +19,14 @@ import (
 
 var cronScheduler *cron.Cron
 var cronEntries = map[int64]cron.EntryID{}
+var runOnceTimers = map[int64]*time.Timer{}
 
 func InitScheduler() {
 	cronScheduler = cron.New()
 	cronScheduler.Start()
 
 	db := database.GetDB()
-	rows, err := db.Query("SELECT id, schedule FROM scheduled_tasks WHERE enabled = 1")
+	rows, err := db.Query("SELECT id, schedule, COALESCE(run_once, 0), COALESCE(run_once_delay, '') FROM scheduled_tasks WHERE enabled = 1")
 	if err != nil {
 		log.Printf("Failed to load scheduled tasks: %v", err)
 		return
@@ -35,8 +36,14 @@ func InitScheduler() {
 	for rows.Next() {
 		var id int64
 		var schedule string
-		if err := rows.Scan(&id, &schedule); err == nil {
-			addCronJob(id, schedule)
+		var runOnce int
+		var runOnceDelay string
+		if err := rows.Scan(&id, &schedule, &runOnce, &runOnceDelay); err == nil {
+			if runOnce == 1 {
+				scheduleRunOnce(id, runOnceDelay)
+			} else {
+				addCronJob(id, schedule)
+			}
 		}
 	}
 	log.Println("Scheduler initialized")
@@ -48,17 +55,22 @@ func StopScheduler() {
 	}
 }
 
-// ReloadScheduler stops all existing cron jobs and reloads from the database.
+// ReloadScheduler stops all existing cron jobs and run-once timers, then reloads from the database.
 func ReloadScheduler() {
-	// Remove all existing entries
+	// Remove all existing cron entries
 	for taskID := range cronEntries {
 		cronScheduler.Remove(cronEntries[taskID])
 		delete(cronEntries, taskID)
 	}
+	// Cancel all run-once timers
+	for taskID, timer := range runOnceTimers {
+		timer.Stop()
+		delete(runOnceTimers, taskID)
+	}
 
 	// Reload from database
 	db := database.GetDB()
-	rows, err := db.Query("SELECT id, schedule FROM scheduled_tasks WHERE enabled = 1")
+	rows, err := db.Query("SELECT id, schedule, COALESCE(run_once, 0), COALESCE(run_once_delay, '') FROM scheduled_tasks WHERE enabled = 1")
 	if err != nil {
 		log.Printf("Failed to reload scheduled tasks: %v", err)
 		return
@@ -68,8 +80,14 @@ func ReloadScheduler() {
 	for rows.Next() {
 		var id int64
 		var schedule string
-		if err := rows.Scan(&id, &schedule); err == nil {
-			addCronJob(id, schedule)
+		var runOnce int
+		var runOnceDelay string
+		if err := rows.Scan(&id, &schedule, &runOnce, &runOnceDelay); err == nil {
+			if runOnce == 1 {
+				scheduleRunOnce(id, runOnceDelay)
+			} else {
+				addCronJob(id, schedule)
+			}
 		}
 	}
 	log.Println("Scheduler reloaded")
@@ -91,6 +109,44 @@ func removeCronJob(taskID int64) {
 		cronScheduler.Remove(entryID)
 		delete(cronEntries, taskID)
 	}
+}
+
+func removeRunOnce(taskID int64) {
+	if timer, ok := runOnceTimers[taskID]; ok {
+		timer.Stop()
+		delete(runOnceTimers, taskID)
+	}
+}
+
+// scheduleRunOnce schedules a one-off task execution.
+// delay can be "now", "+30s", "+5m", "+2h", "+1h30m", etc.
+func scheduleRunOnce(taskID int64, delay string) {
+	d := parseDelay(delay)
+	log.Printf("Scheduling run-once task %d with delay %v", taskID, d)
+	timer := time.AfterFunc(d, func() {
+		executeScheduledTask(taskID)
+		// Auto-disable after execution
+		db := database.GetDB()
+		db.Exec("UPDATE scheduled_tasks SET enabled = 0, updated_at = ? WHERE id = ?", time.Now(), taskID)
+		delete(runOnceTimers, taskID)
+		log.Printf("Run-once task %d completed and auto-disabled", taskID)
+	})
+	runOnceTimers[taskID] = timer
+}
+
+// parseDelay parses delay notation: "now", "+30s", "+5m", "+2h", "+1h30m"
+func parseDelay(delay string) time.Duration {
+	delay = strings.TrimSpace(strings.ToLower(delay))
+	if delay == "" || delay == "now" {
+		return 0
+	}
+	s := strings.TrimPrefix(delay, "+")
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		log.Printf("Invalid delay %q, running immediately: %v", delay, err)
+		return 0
+	}
+	return d
 }
 
 func loadSessionMessages(db *sql.DB, sessionID string) []maas.ChatMessage {
@@ -396,6 +452,8 @@ type createScheduledTaskRequest struct {
 	ContainerImage string  `json:"container_image"`
 	Temperature    float64 `json:"temperature"`
 	MaxTokens      int     `json:"max_tokens"`
+	RunOnce        bool    `json:"run_once"`
+	RunOnceDelay   string  `json:"run_once_delay"`
 }
 
 func ListScheduledTasks(w http.ResponseWriter, r *http.Request) {
@@ -403,6 +461,7 @@ func ListScheduledTasks(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query(`SELECT id, name, COALESCE(description,''), skill_id, schedule, service_account, namespace,
 		enabled, last_run, next_run, run_count, session_id, provider, model, COALESCE(base_url,''),
 		COALESCE(container_image,''), COALESCE(temperature, 0.7), COALESCE(max_tokens, 0),
+		COALESCE(run_once, 0), COALESCE(run_once_delay, ''),
 		created_at, updated_at FROM scheduled_tasks ORDER BY name`)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -416,15 +475,17 @@ func ListScheduledTasks(w http.ResponseWriter, r *http.Request) {
 		var skillID sql.NullInt64
 		var lastRun, nextRun sql.NullTime
 		var sessionID sql.NullString
-		var enabled int
+		var enabled, runOnce int
 		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &skillID, &t.Schedule, &t.ServiceAccount,
 			&t.Namespace, &enabled, &lastRun, &nextRun, &t.RunCount, &sessionID,
 			&t.Provider, &t.Model, &t.BaseURL, &t.ContainerImage, &t.Temperature, &t.MaxTokens,
+			&runOnce, &t.RunOnceDelay,
 			&t.CreatedAt, &t.UpdatedAt); err != nil {
 			httpError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		t.Enabled = enabled == 1
+		t.RunOnce = runOnce == 1
 		if skillID.Valid {
 			t.SkillID = &skillID.Int64
 		}
@@ -448,8 +509,12 @@ func CreateScheduledTask(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if req.Name == "" || req.Schedule == "" {
-		httpError(w, http.StatusBadRequest, "name and schedule are required")
+	if req.Name == "" {
+		httpError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if !req.RunOnce && req.Schedule == "" {
+		httpError(w, http.StatusBadRequest, "schedule is required for recurring tasks")
 		return
 	}
 	if req.ServiceAccount == "" {
@@ -462,27 +527,41 @@ func CreateScheduledTask(w http.ResponseWriter, r *http.Request) {
 		req.Provider = "openai-compatible"
 	}
 
-	// Validate cron expression
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	if _, err := parser.Parse(req.Schedule); err != nil {
-		httpError(w, http.StatusBadRequest, "invalid cron schedule: "+err.Error())
-		return
+	// Validate cron expression for recurring tasks
+	if !req.RunOnce {
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		if _, err := parser.Parse(req.Schedule); err != nil {
+			httpError(w, http.StatusBadRequest, "invalid cron schedule: "+err.Error())
+			return
+		}
 	}
 
 	db := database.GetDB()
 	if req.Temperature <= 0 {
 		req.Temperature = 0.7
 	}
-	result, err := db.Exec(`INSERT INTO scheduled_tasks (name, description, skill_id, schedule, service_account, namespace, provider, model, base_url, api_key, container_image, temperature, max_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+
+	runOnce := 0
+	if req.RunOnce {
+		runOnce = 1
+		if req.Schedule == "" {
+			req.Schedule = "0 0 * * *" // placeholder for run-once tasks
+		}
+	}
+	result, err := db.Exec(`INSERT INTO scheduled_tasks (name, description, skill_id, schedule, service_account, namespace, provider, model, base_url, api_key, container_image, temperature, max_tokens, run_once, run_once_delay)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.Name, req.Description, req.SkillID, req.Schedule, req.ServiceAccount, req.Namespace,
-		req.Provider, req.Model, req.BaseURL, req.APIKey, req.ContainerImage, req.Temperature, req.MaxTokens)
+		req.Provider, req.Model, req.BaseURL, req.APIKey, req.ContainerImage, req.Temperature, req.MaxTokens, runOnce, req.RunOnceDelay)
 	if err != nil {
 		httpError(w, http.StatusConflict, err.Error())
 		return
 	}
 	id, _ := result.LastInsertId()
-	addCronJob(id, req.Schedule)
+	if req.RunOnce {
+		scheduleRunOnce(id, req.RunOnceDelay)
+	} else {
+		addCronJob(id, req.Schedule)
+	}
 	jsonResponse(w, map[string]interface{}{"id": id, "message": "scheduled task created"})
 }
 
@@ -497,7 +576,8 @@ func UpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
 	db := database.GetDB()
 	now := time.Now()
 
-	if req.Schedule != "" {
+	// Validate cron expression for recurring tasks
+	if !req.RunOnce && req.Schedule != "" {
 		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		if _, err := parser.Parse(req.Schedule); err != nil {
 			httpError(w, http.StatusBadRequest, "invalid cron schedule: "+err.Error())
@@ -508,14 +588,27 @@ func UpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
 	if req.Temperature <= 0 {
 		req.Temperature = 0.7
 	}
-	db.Exec(`UPDATE scheduled_tasks SET name=?, description=?, skill_id=?, schedule=?, service_account=?,
-		namespace=?, provider=?, model=?, base_url=?, api_key=?, container_image=?, temperature=?, max_tokens=?, updated_at=? WHERE id=?`,
-		req.Name, req.Description, req.SkillID, req.Schedule, req.ServiceAccount, req.Namespace,
-		req.Provider, req.Model, req.BaseURL, req.APIKey, req.ContainerImage, req.Temperature, req.MaxTokens, now, id)
 
-	// Reschedule
+	runOnce := 0
+	if req.RunOnce {
+		runOnce = 1
+		if req.Schedule == "" {
+			req.Schedule = "0 0 * * *" // placeholder for run-once tasks
+		}
+	}
+	db.Exec(`UPDATE scheduled_tasks SET name=?, description=?, skill_id=?, schedule=?, service_account=?,
+		namespace=?, provider=?, model=?, base_url=?, api_key=?, container_image=?, temperature=?, max_tokens=?,
+		run_once=?, run_once_delay=?, updated_at=? WHERE id=?`,
+		req.Name, req.Description, req.SkillID, req.Schedule, req.ServiceAccount, req.Namespace,
+		req.Provider, req.Model, req.BaseURL, req.APIKey, req.ContainerImage, req.Temperature, req.MaxTokens,
+		runOnce, req.RunOnceDelay, now, id)
+
+	// Reschedule — remove both cron and run-once timers
 	removeCronJob(id)
-	if req.Schedule != "" {
+	removeRunOnce(id)
+	if req.RunOnce {
+		scheduleRunOnce(id, req.RunOnceDelay)
+	} else if req.Schedule != "" {
 		addCronJob(id, req.Schedule)
 	}
 
@@ -525,6 +618,7 @@ func UpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
 func DeleteScheduledTask(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
 	removeCronJob(id)
+	removeRunOnce(id)
 	db := database.GetDB()
 	db.Exec("DELETE FROM task_execution_history WHERE task_id = ?", id)
 	db.Exec("DELETE FROM scheduled_tasks WHERE id = ?", id)
@@ -551,11 +645,17 @@ func ToggleScheduledTask(w http.ResponseWriter, r *http.Request) {
 	db.Exec("UPDATE scheduled_tasks SET enabled = ?, updated_at = ? WHERE id = ?", enabled, time.Now(), id)
 
 	if req.Enabled {
-		var schedule string
-		db.QueryRow("SELECT schedule FROM scheduled_tasks WHERE id = ?", id).Scan(&schedule)
-		addCronJob(id, schedule)
+		var schedule, runOnceDelay string
+		var runOnce int
+		db.QueryRow("SELECT schedule, COALESCE(run_once, 0), COALESCE(run_once_delay, '') FROM scheduled_tasks WHERE id = ?", id).Scan(&schedule, &runOnce, &runOnceDelay)
+		if runOnce == 1 {
+			scheduleRunOnce(id, runOnceDelay)
+		} else {
+			addCronJob(id, schedule)
+		}
 	} else {
 		removeCronJob(id)
+		removeRunOnce(id)
 	}
 
 	jsonResponse(w, map[string]string{"message": "task toggled"})

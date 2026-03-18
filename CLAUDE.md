@@ -5,9 +5,9 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 ## Architecture
 
 ### Frontend (TypeScript, PatternFly 6)
-- **`src/components/ChatPage.tsx`** - Interactive chat with agent loop (shell tool access in plugin pod). Renders markdown responses via `react-markdown` + `remark-gfm`. Per-session skill selection (expandable bar above messages, checkboxes in new chat modal). Active session highlighted in sidebar.
+- **`src/components/ChatPage.tsx`** - Interactive chat with agent loop (shell tool access in plugin pod). Renders markdown responses via `react-markdown` + `remark-gfm`. Per-session skill selection (expandable bar above messages, checkboxes in new chat modal). Active session highlighted in sidebar. Configurable temperature and max tokens per session.
 - **`src/components/SkillsPage.tsx`** - Upload/manage SKILLS.md knowledge files
-- **`src/components/SchedulePage.tsx`** - Schedule skills as cron jobs with container image, SA, namespace, prompt, temperature, max token length
+- **`src/components/SchedulePage.tsx`** - Schedule skills as cron jobs or run-once tasks with container image, SA, namespace, prompt, temperature, max token length. Toggle between recurring (cron) and run-once (delay notation: `now`, `+5m`, `+2h`).
 - **`src/components/SettingsPage.tsx`** - Configure MaaS endpoints (registry or single-model), export/import SQLite database
 - **`src/components/styles.css`** - Chat message styling including markdown rendering (code, tables, blockquotes, lists)
 - **`src/utils/api.ts`** - API client with CSRF token handling (`X-CSRFToken` header from `csrf-token` cookie)
@@ -17,10 +17,11 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 - **`cmd/backend/main.go`** - HTTP server (gorilla/mux), serves plugin static files + API routes, TLS support for OpenShift serving certs, initializes kube client on startup (non-fatal if unavailable)
 - **`pkg/api/`** - REST handlers:
   - `chat.go` - `SendMessage` (POST) uses agent loop with local shell and passes conversation history for multi-turn context; `WebSocketChat` uses simple `maas.Complete()`. Both paths load only session-specific skills (falls back to all enabled skills if none selected).
-  - `schedule.go` - Cron scheduler (robfig/cron), two execution paths:
+  - `schedule.go` - Task scheduler supporting both cron (robfig/cron) and run-once (`time.AfterFunc`) execution:
     - **Container image set** → `executeContainerTask()`: creates executor pod → agent loop with `kube.ExecCommand` → stores results in chat session → deletes pod when done
     - **No container image** → `executeLLMTask()`: agent loop with local shell in plugin pod → stores results in chat session
-    - `ReloadScheduler()` - clears all cron entries and reloads from DB (used after database import)
+    - **Run-once tasks**: `scheduleRunOnce(taskID, delay)` parses delay notation (`now`, `+30s`, `+5m`, `+2h`, `+1h30m`) and schedules via `time.AfterFunc`. Auto-disables after execution.
+    - `ReloadScheduler()` - clears all cron entries and run-once timers, reloads from DB (used after database import)
     - Disabled tasks are skipped silently (no failed history entries)
   - `database.go` - `ExportDatabase` (GET, serves raw .db file) and `ImportDatabase` (POST multipart, replaces DB and reinitializes)
   - `skills.go` - CRUD for skills (upload SKILLS.md files)
@@ -56,7 +57,7 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 - **`pkg/database/`** - SQLite (mattn/go-sqlite3) with WAL mode:
   - `database.go` - Init, migrate, schema for: `skills`, `sessions`, `messages`, `session_skills`, `scheduled_tasks`, `task_execution_history`, `maas_endpoints`, `config`
   - `GetDBPath()`, `Checkpoint()` (flush WAL), `Reinit(newDBPath)` (close, replace file, reopen with migrations)
-  - `models.go` - Go structs: `Skill`, `Session`, `Message`, `ScheduledTask` (includes `Temperature`, `MaxTokens`; `APIKey` uses `json:"-"`), `TaskExecutionHistory`, `MaaSEndpoint`, `Config`
+  - `models.go` - Go structs: `Skill`, `Session` (includes `Temperature`, `MaxTokens`), `Message`, `ScheduledTask` (includes `Temperature`, `MaxTokens`, `RunOnce`, `RunOnceDelay`; `APIKey` uses `json:"-"`), `TaskExecutionHistory`, `MaaSEndpoint`, `Config`
 
 ## Deployment
 
@@ -88,6 +89,8 @@ helm upgrade --install skills-plugin chart/ -n skills-plugin --create-namespace
 - **Model name extraction**: `ExtractModelName()` strips `/v1` suffix before taking the last path segment, preventing "v1" from being used as the model name. The actual model ID is confirmed via `GET /v1/models` API call when available.
 - **Per-session skills**: Each chat session can have specific skills selected via the `session_skills` junction table. New chats pre-select all enabled skills. Skills can be changed on an active session via the expandable skills bar. If no skills are explicitly selected (e.g. old sessions), falls back to loading all enabled skills.
 - **Multi-turn chat context**: `SendMessage` passes full conversation history from the DB to `RunAgentLoop` via `AgentOptions.History`, giving the LLM multi-turn context within a session while keeping sessions isolated from each other.
+- **Run-once tasks**: Scheduled tasks can be set to "Run Once" mode with a delay (`now`, `+5m`, `+2h`). Uses `time.AfterFunc` instead of cron. After execution, the task is automatically disabled (`enabled = 0`). The cron schedule field stores a placeholder value for run-once tasks.
+- **Per-session LLM settings**: Each chat session stores its own `temperature` and `max_tokens` (defaults 0.2 and 2048), passed to `RunAgentLoop` via `AgentOptions`.
 - **Token security**: API keys are never returned to the frontend. `ScheduledTask.APIKey` uses `json:"-"`, `ListEndpoints` returns `"****"`, Settings UI shows "Configured"/"Not set".
 - **Database portability**: Export/import of the SQLite database file via Settings page for migrating config between clusters. Import triggers `Reinit()` + `ReloadScheduler()`.
 - **No `<Page>` wrapper**: Console layout provides its own wrapper; adding `<Page>` causes a grey gap.

@@ -72,6 +72,8 @@ export default function SchedulePage() {
   const [containerImage, setContainerImage] = React.useState('');
   const [temperature, setTemperature] = React.useState(0.2);
   const [maxTokens, setMaxTokens] = React.useState(2048);
+  const [runOnce, setRunOnce] = React.useState(false);
+  const [runOnceDelay, setRunOnceDelay] = React.useState('now');
   const [selectedEndpoint, setSelectedEndpoint] = React.useState('');
   const [selectedModelId, setSelectedModelId] = React.useState('');
 
@@ -125,7 +127,7 @@ export default function SchedulePage() {
       await createScheduledTask({
         name,
         description,
-        schedule,
+        schedule: runOnce ? '' : schedule,
         skill_id: selectedSkillId ? parseInt(selectedSkillId) : undefined,
         service_account: serviceAccount,
         namespace,
@@ -135,6 +137,8 @@ export default function SchedulePage() {
         container_image: containerImage,
         temperature,
         max_tokens: maxTokens,
+        run_once: runOnce,
+        run_once_delay: runOnce ? runOnceDelay : undefined,
       });
       setShowCreate(false);
       resetForm();
@@ -153,6 +157,8 @@ export default function SchedulePage() {
     setContainerImage(task.container_image || '');
     setTemperature(task.temperature || 0.2);
     setMaxTokens(task.max_tokens || 2048);
+    setRunOnce(task.run_once || false);
+    setRunOnceDelay(task.run_once_delay || 'now');
     setSelectedModelId(task.model);
     // Find the endpoint that matches this task's base_url and load its models
     const matchingEndpoint = endpoints.find(e => task.base_url && task.base_url.startsWith(e.url));
@@ -171,7 +177,7 @@ export default function SchedulePage() {
       await updateScheduledTask(editingTask.id, {
         name,
         description,
-        schedule,
+        schedule: runOnce ? '' : schedule,
         skill_id: selectedSkillId ? parseInt(selectedSkillId) : undefined,
         service_account: serviceAccount,
         namespace,
@@ -181,6 +187,8 @@ export default function SchedulePage() {
         container_image: containerImage,
         temperature,
         max_tokens: maxTokens,
+        run_once: runOnce,
+        run_once_delay: runOnce ? runOnceDelay : undefined,
       });
       setShowCreate(false);
       setEditingTask(null);
@@ -203,7 +211,7 @@ export default function SchedulePage() {
   const resetForm = () => {
     setName(''); setDescription(''); setSchedule(''); setSelectedSkillId('');
     setServiceAccount('default'); setNamespace(pluginNamespace); setContainerImage('');
-    setTemperature(0.2); setMaxTokens(2048);
+    setTemperature(0.2); setMaxTokens(2048); setRunOnce(false); setRunOnceDelay('now');
     setSelectedEndpoint(''); setSelectedModelId('');
     setEditingTask(null);
   };
@@ -261,7 +269,13 @@ export default function SchedulePage() {
                   <DescriptionList isHorizontal isCompact>
                     <DescriptionListGroup>
                       <DescriptionListTerm>Schedule</DescriptionListTerm>
-                      <DescriptionListDescription><code>{t.schedule}</code></DescriptionListDescription>
+                      <DescriptionListDescription>
+                        {t.run_once ? (
+                          <><Label color="purple" isCompact>Run Once</Label>{' '}{t.run_once_delay || 'now'}</>
+                        ) : (
+                          <code>{t.schedule}</code>
+                        )}
+                      </DescriptionListDescription>
                     </DescriptionListGroup>
                     <DescriptionListGroup>
                       <DescriptionListTerm>ServiceAccount</DescriptionListTerm>
@@ -331,14 +345,33 @@ export default function SchedulePage() {
           <FormGroup label="Prompt" fieldId="task-desc">
             <TextArea id="task-desc" value={description} onChange={(_e, v) => setDescription(v)} rows={3} placeholder="Instructions to send with the skill to the agent..." />
           </FormGroup>
-          <FormGroup label="Cron Schedule" isRequired fieldId="task-schedule">
-            <TextInput id="task-schedule" value={schedule} onChange={(_e, v) => setSchedule(v)} placeholder="0 9 * * *" />
-            <FormHelperText>
-              <HelperText>
-                <HelperTextItem>e.g. */5 * * * * (every 5 min)</HelperTextItem>
-              </HelperText>
-            </FormHelperText>
+          <FormGroup fieldId="task-run-once">
+            <Switch
+              id="task-run-once"
+              label={runOnce ? 'Run Once' : 'Recurring (Cron)'}
+              isChecked={runOnce}
+              onChange={(_e, checked) => setRunOnce(checked)}
+            />
           </FormGroup>
+          {runOnce ? (
+            <FormGroup label="Run Delay" isRequired fieldId="task-delay">
+              <TextInput id="task-delay" value={runOnceDelay} onChange={(_e, v) => setRunOnceDelay(v)} placeholder="now" />
+              <FormHelperText>
+                <HelperText>
+                  <HelperTextItem>&quot;now&quot; for immediate, or delay like &quot;+30s&quot;, &quot;+5m&quot;, &quot;+2h&quot;, &quot;+1h30m&quot;</HelperTextItem>
+                </HelperText>
+              </FormHelperText>
+            </FormGroup>
+          ) : (
+            <FormGroup label="Cron Schedule" isRequired fieldId="task-schedule">
+              <TextInput id="task-schedule" value={schedule} onChange={(_e, v) => setSchedule(v)} placeholder="0 9 * * *" />
+              <FormHelperText>
+                <HelperText>
+                  <HelperTextItem>e.g. */5 * * * * (every 5 min)</HelperTextItem>
+                </HelperText>
+              </FormHelperText>
+            </FormGroup>
+          )}
           <FormGroup label="Skill" fieldId="task-skill">
             <FormSelect id="task-skill" value={selectedSkillId} onChange={(_e, val) => setSelectedSkillId(val)}>
               <FormSelectOption value="" label="-- None (manual prompt) --" />
@@ -399,7 +432,7 @@ export default function SchedulePage() {
           </FormGroup>
         </ModalBody>
         <ModalFooter>
-          <Button variant="primary" onClick={editingTask ? handleUpdate : handleCreate} isDisabled={!name || !schedule}>
+          <Button variant="primary" onClick={editingTask ? handleUpdate : handleCreate} isDisabled={!name || (!runOnce && !schedule)}>
             {editingTask ? 'Save' : 'Create'}
           </Button>
           <Button variant="link" onClick={() => { setShowCreate(false); setEditingTask(null); }}>Cancel</Button>

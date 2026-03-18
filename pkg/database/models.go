@@ -53,6 +53,8 @@ type ScheduledTask struct {
 	ContainerImage string    `json:"container_image,omitempty"`
 	Temperature    float64   `json:"temperature"`
 	MaxTokens      int       `json:"max_tokens"`
+	RunOnce        bool      `json:"run_once"`
+	RunOnceDelay   string    `json:"run_once_delay,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
