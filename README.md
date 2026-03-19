@@ -40,3 +40,7 @@ helm upgrade --install skills-plugin chart/ -n skills-plugin --create-namespace 
     ![demo/chat-output.png](demo/chat-output.png)
 
     ![demo/chat-output-1.png](demo/chat-output-1.png)
+
+1. MLFlow (optional) support for tracing and observability.
+
+    ![demo/mlflow-support.png](demo/mlflow-support.png)
