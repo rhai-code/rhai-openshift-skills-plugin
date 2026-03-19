@@ -689,6 +689,14 @@ func ToggleScheduledTask(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"message": "task toggled"})
 }
 
+func DeleteTaskHistory(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+	db := database.GetDB()
+	db.Exec("DELETE FROM task_execution_history WHERE task_id = ?", id)
+	db.Exec("UPDATE scheduled_tasks SET run_count = 0, last_run = NULL, updated_at = ? WHERE id = ?", time.Now(), id)
+	jsonResponse(w, map[string]string{"message": "execution history deleted"})
+}
+
 func GetTaskHistory(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
 	db := database.GetDB()

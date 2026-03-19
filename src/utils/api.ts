@@ -140,6 +140,8 @@ export const toggleScheduledTask = (id: number, enabled: boolean) =>
   request('/scheduled-tasks/' + id + '/toggle', { method: 'POST', body: JSON.stringify({ enabled }) });
 export const getTaskHistory = (id: number) =>
   request<TaskHistory[]>('/scheduled-tasks/' + id + '/history');
+export const deleteTaskHistory = (id: number) =>
+  request('/scheduled-tasks/' + id + '/history', { method: 'DELETE' });
 
 // MaaS Endpoints
 export interface MaaSEndpoint {

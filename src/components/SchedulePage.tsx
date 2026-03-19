@@ -40,6 +40,7 @@ import {
   deleteScheduledTask,
   toggleScheduledTask,
   getTaskHistory,
+  deleteTaskHistory,
   listSkills,
   listEndpoints,
   listModels,
@@ -309,29 +310,48 @@ export default function SchedulePage() {
                     )}
                   </DescriptionList>
 
-                  <ExpandableSection
-                    toggleText={expandedTasks[t.id] ? 'Hide execution history' : 'Show execution history'}
-                    isExpanded={!!expandedTasks[t.id]}
-                    onToggle={() => toggleExpanded(t.id)}
-                  >
-                    {(historyMap[t.id] || []).length === 0 ? (
-                      <p>No executions yet.</p>
-                    ) : (
-                      (historyMap[t.id] || []).map(h => (
-                        <Card key={h.id} isCompact isPlain className="pf-v6-u-mb-sm">
-                          <CardBody>
-                            <Split hasGutter>
-                              <SplitItem><Label color={statusColor(h.status)}>{h.status}</Label></SplitItem>
-                              <SplitItem>{new Date(h.started_at).toLocaleString()}</SplitItem>
-                              {h.duration_ms !== undefined && <SplitItem>{h.duration_ms}ms</SplitItem>}
-                            </Split>
-                            {h.output && <pre className="task-output">{h.output}</pre>}
-                            {h.error_message && <pre className="task-error">{h.error_message}</pre>}
-                          </CardBody>
-                        </Card>
-                      ))
+                  <Split hasGutter>
+                    <SplitItem isFilled>
+                      <ExpandableSection
+                        toggleText={expandedTasks[t.id] ? 'Hide execution history' : 'Show execution history'}
+                        isExpanded={!!expandedTasks[t.id]}
+                        onToggle={() => toggleExpanded(t.id)}
+                      >
+                        {(historyMap[t.id] || []).length === 0 ? (
+                          <p>No executions yet.</p>
+                        ) : (
+                          (historyMap[t.id] || []).map(h => (
+                            <Card key={h.id} isCompact isPlain className="pf-v6-u-mb-sm">
+                              <CardBody>
+                                <Split hasGutter>
+                                  <SplitItem><Label color={statusColor(h.status)}>{h.status}</Label></SplitItem>
+                                  <SplitItem>{new Date(h.started_at).toLocaleString()}</SplitItem>
+                                  {h.duration_ms !== undefined && <SplitItem>{h.duration_ms}ms</SplitItem>}
+                                </Split>
+                                {h.output && <pre className="task-output">{h.output}</pre>}
+                                {h.error_message && <pre className="task-error">{h.error_message}</pre>}
+                              </CardBody>
+                            </Card>
+                          ))
+                        )}
+                      </ExpandableSection>
+                    </SplitItem>
+                    {(historyMap[t.id] || []).length > 0 && (
+                      <SplitItem>
+                        <Button
+                          variant="link"
+                          isDanger
+                          onClick={async () => {
+                            await deleteTaskHistory(t.id);
+                            setHistoryMap(prev => ({ ...prev, [t.id]: [] }));
+                            loadTasks();
+                          }}
+                        >
+                          Delete history
+                        </Button>
+                      </SplitItem>
                     )}
-                  </ExpandableSection>
+                  </Split>
                 </CardBody>
               </Card>
             ))
