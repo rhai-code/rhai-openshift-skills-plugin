@@ -7,7 +7,7 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 ### Frontend (TypeScript, PatternFly 6)
 - **`src/components/ChatPage.tsx`** - Interactive chat with agent loop (shell tool access in plugin pod). Renders markdown responses via `react-markdown` + `remark-gfm`. Per-session skill selection (expandable bar above messages, checkboxes in new chat modal). Active session highlighted in sidebar. Configurable temperature and max tokens per session.
 - **`src/components/SkillsPage.tsx`** - Upload/manage SKILLS.md knowledge files
-- **`src/components/SchedulePage.tsx`** - Schedule skills as cron jobs or run-once tasks with container image, SA, namespace, prompt, temperature, max token length. Toggle between recurring (cron) and run-once (delay notation: `now`, `+5m`, `+2h`).
+- **`src/components/SchedulePage.tsx`** - Schedule skills as cron jobs or run-once tasks with container image, SA, namespace, prompt, temperature, max token length. Toggle between recurring (cron) and run-once (delay notation: `now`, `+5m`, `+2h`). Task cards show the user prompt in the description list. Per-task "Delete history" button (inline with the execution history toggle) clears execution history and resets run count/last run.
 - **`src/components/SettingsPage.tsx`** - Configure MaaS endpoints (registry or single-model), global system prompt, export/import SQLite database
 - **`src/components/styles.css`** - Chat message styling including markdown rendering (code, tables, blockquotes, lists)
 - **`src/utils/api.ts`** - API client with CSRF token handling (`X-CSRFToken` header from `csrf-token` cookie)
@@ -22,6 +22,9 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
     - **No container image** → `executeLLMTask()`: agent loop with local shell in plugin pod → stores results in chat session
     - **Run-once tasks**: `scheduleRunOnce(taskID, delay)` parses delay notation (`now`, `+30s`, `+5m`, `+2h`, `+1h30m`) and schedules via `time.AfterFunc`. Auto-disables after execution.
     - `ReloadScheduler()` - clears all cron entries and run-once timers, reloads from DB (used after database import)
+    - `DeleteTaskHistory` (DELETE) - clears execution history for a task and resets `run_count`/`last_run`
+    - **Concurrency guard**: `sync.Map` (`runningTasks`) prevents the same task from executing concurrently — if a cron fires while the previous run is still active, the new invocation is skipped
+    - **Session reuse safety**: `getOrCreateSession()` verifies the referenced chat session still exists before reusing it; if deleted by the user, creates a new session
     - Disabled tasks are skipped silently (no failed history entries)
   - `database.go` - `ExportDatabase` (GET, serves raw .db file) and `ImportDatabase` (POST multipart, replaces DB and reinitializes)
   - `skills.go` - CRUD for skills (upload SKILLS.md files)
@@ -39,10 +42,10 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
   - `AgentOptions` struct: `Temperature float64`, `MaxTokens int`, `History []ChatMessage`, `Source string` (trace label), `ExperimentName string` (MLflow experiment)
   - Single `shell` tool definition, iterates up to `maxIterations` (default 15) calling LLM and executing tool calls
   - Instrumented with OTel spans: root AGENT span → CHAT_MODEL per LLM call → TOOL per shell execution
-  - Strips `<think>` tags from responses (for reasoning models)
+  - Strips `<think>` tags from responses (for reasoning models). When the final response is empty after stripping, falls back to the last substantive assistant message or tool output
 - **`pkg/agent/context.go`** - `newTimeoutContext()` helper
 - **`pkg/kube/exec.go`** - Executor pod lifecycle for running agent commands in containers:
-  - `CreateExecutorPod(namespace, serviceAccount, containerImage, taskName)` - creates pod with `sleep 3600`, waits for Running
+  - `CreateExecutorPod(namespace, serviceAccount, containerImage, taskName)` - creates pod with `sleep 3600` and random suffix in pod name (avoids collisions), waits for Running
   - `ExecCommand(ep, command, timeout)` - SPDY exec into the pod
   - `DeleteExecutorPod(ep)` - cleanup after agent loop completes
   - `Init()` - initializes in-cluster k8s client (`clientset`, `restConfig`)
@@ -100,7 +103,7 @@ helm upgrade --install skills-plugin chart/ -n skills-plugin --create-namespace
 ## Key Design Decisions
 
 - **Agent loop in executor pods**: Scheduled skills with a container image create a temporary pod (`sleep 3600`), run the agent loop with commands exec'd into that pod via SPDY, then delete the pod. This keeps the plugin pod clean and allows per-task RBAC via ServiceAccount selection.
-- **Scheduled task results in chat**: Both execution paths (container and LLM-only) create/reuse a chat session and store messages, so results appear in the Chat UI.
+- **Scheduled task results in chat**: Both execution paths (container and LLM-only) create/reuse a chat session and store messages, so results appear in the Chat UI. `getOrCreateSession()` validates the session still exists before reusing (handles user-deleted sessions gracefully).
 - **Console proxy for API calls**: All frontend API calls go through the OpenShift console proxy (`/api/proxy/plugin/openshift-skills-plugin/backend/...`), requiring CSRF tokens.
 - **MaaS two-step auth**: Bearer token → `POST /v1/tokens` → session token. Session token used for all subsequent API calls.
 - **Two endpoint types**: Supports both model registries (multi-model, lists via `/v1/models`) and single-model OpenAI-compatible URLs (auto-detected by path pattern). Single-model URLs have the model name before `/v1` in the path.
