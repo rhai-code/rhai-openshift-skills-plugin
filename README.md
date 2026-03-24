@@ -2,6 +2,8 @@
 
 An OpenShift Console Plugin that manages SKILLS as Kubernetes Jobs.
 
+- recently added OpenShift multi-tenancy support for users (see [CLAUDE.md]CLAUDE.md for details).
+
   ![demo/skills-menu.png](demo/skills-menu.png)
 
 To install as a cluster-admin

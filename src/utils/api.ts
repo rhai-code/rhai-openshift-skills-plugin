@@ -23,6 +23,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return resp.json();
 }
 
+// Auth
+export interface AuthInfo {
+  username: string;
+  groups: string[];
+  is_admin: boolean;
+}
+
+export const getAuthInfo = () => request<AuthInfo>('/auth/me');
+
 // Skills
 export interface Skill {
   id: number;
@@ -30,6 +39,8 @@ export interface Skill {
   description: string;
   content: string;
   enabled: boolean;
+  owner: string;
+  is_global: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -66,6 +77,7 @@ export interface Session {
   base_url?: string;
   temperature: number;
   max_tokens: number;
+  owner: string;
   created_at: string;
 }
 
@@ -115,6 +127,7 @@ export interface ScheduledTask {
   max_tokens: number;
   run_once: boolean;
   run_once_delay?: string;
+  owner: string;
   created_at: string;
 }
 
@@ -151,6 +164,8 @@ export interface MaaSEndpoint {
   api_key?: string;
   provider_type: string;
   enabled: boolean;
+  owner: string;
+  is_global: boolean;
   single_model?: boolean;
   model_name?: string;
   created_at: string;

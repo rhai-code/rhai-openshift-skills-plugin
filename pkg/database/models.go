@@ -8,6 +8,8 @@ type Skill struct {
 	Description string    `json:"description"`
 	Content     string    `json:"content"`
 	Enabled     bool      `json:"enabled"`
+	Owner       string    `json:"owner"`
+	IsGlobal    bool      `json:"is_global"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -21,6 +23,7 @@ type Session struct {
 	SystemPrompt string    `json:"system_prompt,omitempty"`
 	Temperature  float64   `json:"temperature"`
 	MaxTokens    int       `json:"max_tokens"`
+	Owner        string    `json:"owner"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -55,6 +58,7 @@ type ScheduledTask struct {
 	MaxTokens      int       `json:"max_tokens"`
 	RunOnce        bool      `json:"run_once"`
 	RunOnceDelay   string    `json:"run_once_delay,omitempty"`
+	Owner          string    `json:"owner"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
@@ -77,6 +81,8 @@ type MaaSEndpoint struct {
 	APIKey       string    `json:"api_key,omitempty"`
 	ProviderType string    `json:"provider_type"`
 	Enabled      bool      `json:"enabled"`
+	Owner        string    `json:"owner"`
+	IsGlobal     bool      `json:"is_global"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 

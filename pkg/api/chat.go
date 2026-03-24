@@ -25,6 +25,7 @@ type chatMessageRequest struct {
 }
 
 func SendMessage(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	sessionID := mux.Vars(r)["id"]
 	var req chatMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -40,14 +41,17 @@ func SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Get session
 	var sess database.Session
-	err := db.QueryRow("SELECT id, name, provider, model, COALESCE(base_url,''), COALESCE(system_prompt,''), temperature, max_tokens FROM sessions WHERE id = ?", sessionID).
-		Scan(&sess.ID, &sess.Name, &sess.Provider, &sess.Model, &sess.BaseURL, &sess.SystemPrompt, &sess.Temperature, &sess.MaxTokens)
+	err := db.QueryRow("SELECT id, name, provider, model, COALESCE(base_url,''), COALESCE(system_prompt,''), temperature, max_tokens, COALESCE(owner,'') FROM sessions WHERE id = ?", sessionID).
+		Scan(&sess.ID, &sess.Name, &sess.Provider, &sess.Model, &sess.BaseURL, &sess.SystemPrompt, &sess.Temperature, &sess.MaxTokens, &sess.Owner)
 	if err == sql.ErrNoRows {
 		httpError(w, http.StatusNotFound, "session not found")
 		return
 	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !authorizeResource(w, user, sess.Owner) {
 		return
 	}
 
@@ -96,12 +100,16 @@ func SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The session base_url is the model-specific inference URL.
-	// Look up the API key and registry URL from the MaaS endpoint.
+	// Look up the API key and registry URL from the MaaS endpoint (scoped to visible endpoints).
 	baseURL := sess.BaseURL
 	apiKey := ""
 	registryURL := ""
 	var key, regURL string
-	err = db.QueryRow("SELECT COALESCE(api_key,''), url FROM maas_endpoints WHERE enabled = 1 ORDER BY id LIMIT 1").Scan(&key, &regURL)
+	if user.IsAdmin {
+		err = db.QueryRow("SELECT COALESCE(api_key,''), url FROM maas_endpoints WHERE enabled = 1 ORDER BY id LIMIT 1").Scan(&key, &regURL)
+	} else {
+		err = db.QueryRow("SELECT COALESCE(api_key,''), url FROM maas_endpoints WHERE enabled = 1 AND (is_global = 1 OR owner = ?) ORDER BY id LIMIT 1", user.Username).Scan(&key, &regURL)
+	}
 	if err == nil {
 		apiKey = key
 		registryURL = regURL

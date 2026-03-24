@@ -9,6 +9,12 @@ import (
 )
 
 func ExportDatabase(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
+	if !user.IsAdmin {
+		httpError(w, http.StatusForbidden, "admin access required")
+		return
+	}
+
 	// Flush WAL to ensure the file is complete
 	if err := database.Checkpoint(); err != nil {
 		httpError(w, http.StatusInternalServerError, "checkpoint failed: "+err.Error())
@@ -35,6 +41,12 @@ func ExportDatabase(w http.ResponseWriter, r *http.Request) {
 }
 
 func ImportDatabase(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
+	if !user.IsAdmin {
+		httpError(w, http.StatusForbidden, "admin access required")
+		return
+	}
+
 	// Limit upload size to 100MB
 	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
 

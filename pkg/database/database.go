@@ -190,6 +190,13 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE sessions ADD COLUMN max_tokens INTEGER DEFAULT 0`,
 		`ALTER TABLE scheduled_tasks ADD COLUMN run_once INTEGER DEFAULT 0`,
 		`ALTER TABLE scheduled_tasks ADD COLUMN run_once_delay TEXT DEFAULT ''`,
+		// RBAC columns
+		`ALTER TABLE sessions ADD COLUMN owner TEXT DEFAULT ''`,
+		`ALTER TABLE scheduled_tasks ADD COLUMN owner TEXT DEFAULT ''`,
+		`ALTER TABLE skills ADD COLUMN owner TEXT DEFAULT ''`,
+		`ALTER TABLE skills ADD COLUMN is_global INTEGER DEFAULT 0`,
+		`ALTER TABLE maas_endpoints ADD COLUMN owner TEXT DEFAULT ''`,
+		`ALTER TABLE maas_endpoints ADD COLUMN is_global INTEGER DEFAULT 0`,
 	}
 	// ALTER TABLE will fail if column already exists, that's fine
 	for _, stmt := range statements {
@@ -201,5 +208,16 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("exec %q: %w", stmt[:50], err)
 		}
 	}
+
+	// One-time data migration: mark existing ownerless skills/endpoints as global
+	var migrated string
+	err := db.QueryRow("SELECT value FROM config WHERE key = 'rbac_migrated'").Scan(&migrated)
+	if err != nil || migrated != "1" {
+		db.Exec("UPDATE skills SET is_global = 1 WHERE owner = ''")
+		db.Exec("UPDATE maas_endpoints SET is_global = 1 WHERE owner = ''")
+		db.Exec("INSERT INTO config (key, value) VALUES ('rbac_migrated', '1') ON CONFLICT(key) DO UPDATE SET value = '1'")
+		log.Println("RBAC migration: existing skills and endpoints marked as global")
+	}
+
 	return nil
 }

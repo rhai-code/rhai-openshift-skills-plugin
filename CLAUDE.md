@@ -5,18 +5,25 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 ## Architecture
 
 ### Frontend (TypeScript, PatternFly 6)
-- **`src/components/ChatPage.tsx`** - Interactive chat with agent loop (shell tool access in plugin pod). Renders markdown responses via `react-markdown` + `remark-gfm`. Per-session skill selection (expandable bar above messages, checkboxes in new chat modal). Active session highlighted in sidebar. Configurable temperature and max tokens per session.
-- **`src/components/SkillsPage.tsx`** - Upload/manage SKILLS.md knowledge files
-- **`src/components/SchedulePage.tsx`** - Schedule skills as cron jobs or run-once tasks with container image, SA, namespace, prompt, temperature, max token length. Toggle between recurring (cron) and run-once (delay notation: `now`, `+5m`, `+2h`). Task cards show the user prompt in the description list. Per-task "Delete history" button (inline with the execution history toggle) clears execution history and resets run count/last run.
-- **`src/components/SettingsPage.tsx`** - Configure MaaS endpoints (registry or single-model), global system prompt, export/import SQLite database
+- **`src/components/ChatPage.tsx`** - Interactive chat with agent loop (shell tool access in plugin pod). Renders markdown responses via `react-markdown` + `remark-gfm`. Per-session skill selection (expandable bar above messages, checkboxes in new chat modal). Active session highlighted in sidebar. Configurable temperature and max tokens per session. Sessions auto-scoped to current user by backend.
+- **`src/components/SkillsPage.tsx`** - Upload/manage SKILLS.md knowledge files. Shows Global/Private labels and owner on each skill card. "Share globally" Switch for owned skills. Edit/delete/toggle disabled on skills user doesn't own (unless admin).
+- **`src/components/SchedulePage.tsx`** - Schedule skills as cron jobs or run-once tasks with container image, SA, namespace, prompt, temperature, max token length. Toggle between recurring (cron) and run-once (delay notation: `now`, `+5m`, `+2h`). Task cards show the user prompt in the description list. Per-task "Delete history" button (inline with the execution history toggle) clears execution history and resets run count/last run. Shows owner label for admin users.
+- **`src/components/SettingsPage.tsx`** - Configure MaaS endpoints (registry or single-model), global system prompt, export/import SQLite database. System prompt is read-only for non-admins. Database export/import section hidden for non-admins. Endpoint cards show Global/Private and owner labels; edit/delete only for owners or admins.
 - **`src/components/styles.css`** - Chat message styling including markdown rendering (code, tables, blockquotes, lists)
-- **`src/utils/api.ts`** - API client with CSRF token handling (`X-CSRFToken` header from `csrf-token` cookie)
+- **`src/utils/api.ts`** - API client with CSRF token handling (`X-CSRFToken` header from `csrf-token` cookie). Includes `AuthInfo` type and `getAuthInfo()` for `/api/auth/me`.
+- **`src/utils/AuthContext.tsx`** - `useAuth()` hook providing `{username, isAdmin, loading}`. Module-level singleton cache — auth info fetched once and shared across all page components (each loaded independently by console SDK via `$codeRef`).
 - **`console-extensions.json`** - Plugin routes under `/skills-plugin/{chat,skills,schedule,settings}` in admin perspective "Skills" nav section
 
 ### Backend (Go)
-- **`cmd/backend/main.go`** - HTTP server (gorilla/mux), serves plugin static files + API routes, TLS support for OpenShift serving certs, initializes kube client on startup (non-fatal if unavailable), initializes MLflow tracing (`mlflow.Init("")`) with deferred `Shutdown()`
+- **`cmd/backend/main.go`** - HTTP server (gorilla/mux), serves plugin static files + API routes, TLS support for OpenShift serving certs, initializes kube client on startup (non-fatal if unavailable), initializes MLflow tracing (`mlflow.Init("")`) with deferred `Shutdown()`. Wires `AuthMiddleware` on the API subrouter and registers `/api/auth/me`.
 - **`pkg/api/`** - REST handlers:
-  - `chat.go` - `SendMessage` (POST) uses agent loop with local shell and passes conversation history for multi-turn context; `WebSocketChat` uses simple `maas.Complete()`. Both paths load only session-specific skills (falls back to all enabled skills if none selected).
+  - `auth.go` - Authentication and authorization middleware:
+    - `UserInfo` struct: `Username string`, `Groups []string`, `IsAdmin bool`
+    - `AuthMiddleware` - extracts `Authorization: Bearer <token>` header, performs TokenReview (username/groups) and SubjectAccessReview (admin check against `skills.openshift.io/plugins` verb `admin`). Caches results in `sync.Map` keyed by SHA-256 of token (TTL 60s). Skips auth for `/api/health`. Falls back to anonymous admin when no kube client is available (dev mode).
+    - `GetUser(r)` - extracts `*UserInfo` from request context
+    - `MeHandler` - `GET /api/auth/me` → returns `{username, groups, is_admin}`
+    - `authorizeResource(w, user, resourceOwner)` - returns true if admin or owner, writes 403 otherwise
+  - `chat.go` - `SendMessage` (POST) checks session ownership, uses agent loop with local shell and passes conversation history for multi-turn context; `WebSocketChat` uses simple `maas.Complete()`. Both paths load only session-specific skills (falls back to all enabled skills if none selected). MaaS endpoint lookup scoped to visible endpoints (global or owned).
   - `schedule.go` - Task scheduler supporting both cron (robfig/cron) and run-once (`time.AfterFunc`) execution:
     - **Container image set** → `executeContainerTask()`: creates executor pod → agent loop with `kube.ExecCommand` → stores results in chat session → deletes pod when done
     - **No container image** → `executeLLMTask()`: agent loop with local shell in plugin pod → stores results in chat session
@@ -24,16 +31,17 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
     - `ReloadScheduler()` - clears all cron entries and run-once timers, reloads from DB (used after database import)
     - `DeleteTaskHistory` (DELETE) - clears execution history for a task and resets `run_count`/`last_run`
     - **Concurrency guard**: `sync.Map` (`runningTasks`) prevents the same task from executing concurrently — if a cron fires while the previous run is still active, the new invocation is skipped
-    - **Session reuse safety**: `getOrCreateSession()` verifies the referenced chat session still exists before reusing it; if deleted by the user, creates a new session
+    - **Session reuse safety**: `getOrCreateSession()` verifies the referenced chat session still exists before reusing it; if deleted by the user, creates a new session. Propagates task `owner` to auto-created sessions.
+    - **Owner-scoped**: List filters by owner (admin sees all). Create sets owner. Update/delete/toggle/history check ownership.
     - Disabled tasks are skipped silently (no failed history entries)
-  - `database.go` - `ExportDatabase` (GET, serves raw .db file) and `ImportDatabase` (POST multipart, replaces DB and reinitializes)
-  - `skills.go` - CRUD for skills (upload SKILLS.md files)
-  - `sessions.go` - CRUD for chat sessions with per-session skill selection (`session_skills` junction table). `PUT /sessions/{id}/skills` updates skill associations.
-  - `maas_endpoints.go` - CRUD for MaaS endpoints, model listing, health checks. Supports two endpoint types:
+  - `database.go` - `ExportDatabase` (GET, serves raw .db file) and `ImportDatabase` (POST multipart, replaces DB and reinitializes). Both admin-only (403 for non-admins).
+  - `skills.go` - CRUD for skills (upload SKILLS.md files). List returns `is_global=1 OR owner=?` for non-admins (admins see all). Create sets owner, accepts `is_global`. Update/delete check ownership. Supports `is_global` toggle.
+  - `sessions.go` - CRUD for chat sessions with per-session skill selection (`session_skills` junction table). `PUT /sessions/{id}/skills` updates skill associations. List filters by owner (admin sees all). Create sets owner. Get/delete/update-skills check ownership.
+  - `maas_endpoints.go` - CRUD for MaaS endpoints, model listing, health checks. List returns `is_global=1 OR owner=?` for non-admins (admins see all). Create sets owner, accepts `is_global`. Update/delete check ownership. ListModels scoped to visible endpoints. Supports two endpoint types:
     - **Model registry** (e.g. `http://maas.example.com/v1`) → lists models via `GET /v1/models`, returns per-model inference URLs
     - **Single-model URL** (e.g. `http://maas.example.com/prelude-maas/llama-32-3b/v1`) → auto-detected by `IsSingleModelURL()`, queries `GET {url}/models` to get model ID, shown as "Single model: name" in UI
     - API keys are never returned to the frontend (masked as `"****"`)
-  - `config.go` - `GET/PUT /api/config?key=` for key-value config (e.g. `system_prompt`). `GetSystemPrompt()` helper used by session creation and scheduled task execution.
+  - `config.go` - `GET/PUT /api/config?key=` for key-value config (e.g. `system_prompt`). `GetSystemPrompt()` helper used by session creation and scheduled task execution. `SetConfig` is admin-only (403 for non-admins).
   - `helpers.go` - `jsonResponse()`, `httpError()`
 - **`pkg/agent/agent.go`** - LLM-driven agent loop (OpenAI-compatible tool calling API):
   - `RunAgentLoop(ctx, completionsURL, token, model, systemPrompt, userMessage string, maxIterations int, shellExec ShellExecutor, opts *AgentOptions) (*AgentResult, error)`
@@ -70,9 +78,9 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
   - `Shutdown(ctx)` - flushes all cached tracer providers
   - MLflow span attributes: `mlflow.spanType` (AGENT/CHAT_MODEL/TOOL), `mlflow.spanInputs`, `mlflow.spanOutputs`
 - **`pkg/database/`** - SQLite (mattn/go-sqlite3) with WAL mode:
-  - `database.go` - Init, migrate, schema for: `skills`, `sessions`, `messages`, `session_skills`, `scheduled_tasks`, `task_execution_history`, `maas_endpoints`, `config`
+  - `database.go` - Init, migrate, schema for: `skills`, `sessions`, `messages`, `session_skills`, `scheduled_tasks`, `task_execution_history`, `maas_endpoints`, `config`. Migrations add `owner` column to `sessions`, `scheduled_tasks`, `skills`, `maas_endpoints` and `is_global` column to `skills`, `maas_endpoints`. One-time data migration (guarded by `rbac_migrated` config flag) marks existing ownerless skills/endpoints as `is_global=1`.
   - `GetDBPath()`, `Checkpoint()` (flush WAL), `Reinit(newDBPath)` (close, replace file, reopen with migrations)
-  - `models.go` - Go structs: `Skill`, `Session` (includes `Temperature`, `MaxTokens`), `Message`, `ScheduledTask` (includes `Temperature`, `MaxTokens`, `RunOnce`, `RunOnceDelay`; `APIKey` uses `json:"-"`), `TaskExecutionHistory`, `MaaSEndpoint`, `Config`
+  - `models.go` - Go structs: `Skill` (includes `Owner`, `IsGlobal`), `Session` (includes `Temperature`, `MaxTokens`, `Owner`), `Message`, `ScheduledTask` (includes `Temperature`, `MaxTokens`, `RunOnce`, `RunOnceDelay`, `Owner`; `APIKey` uses `json:"-"`), `TaskExecutionHistory`, `MaaSEndpoint` (includes `Owner`, `IsGlobal`), `Config`
 
 ## Deployment
 
@@ -85,7 +93,7 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 ### Helm Chart (`chart/`)
 - **`consoleplugin.yaml`** - ConsolePlugin CR (v1 API) with proxy: `endpoint.type: Service`, `authorization: UserToken`
 - **`deployment.yaml`** - Sets `POD_NAMESPACE` via downward API, TLS from serving cert secret, PVC for SQLite data, `MLFLOW_TRACKING_URI` env var (when mlflow enabled, points to internal mlflow service)
-- **`rbac.yaml`** - ClusterRole for batch jobs CRUD, serviceaccounts/namespaces list; namespace-scoped Role for pods create/delete, pods/log get, pods/exec create
+- **`rbac.yaml`** - ClusterRole for batch jobs CRUD, serviceaccounts/namespaces list; namespace-scoped Role for pods create/delete, pods/log get, pods/exec create. ClusterRole/Binding for plugin SA to create TokenReviews and SubjectAccessReviews (RBAC auth). User-facing ClusterRoles: `{plugin-name}-user` (verb `use` on `skills.openshift.io/plugins`) and `{plugin-name}-admin` (verbs `use`, `admin`). Bind to users via `oc adm policy add-cluster-role-to-user`.
 - **`enable-plugin.yaml`** - Post-install/upgrade hook Job that patches Console CR to enable plugin (avoids ownership conflicts with other operators)
 - **`values.yaml`** - Image: `quay.io/eformat/openshift-skills-plugin:latest`, PVC 2Gi, TLS enabled, mlflow disabled by default
 - **MLflow templates** (all gated by `.Values.mlflow.enabled`):
@@ -96,8 +104,18 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
   - `mlflow-route.yaml` - Route always created when mlflow enabled. Edge TLS without oauth, reencrypt TLS with oauth.
 
 ### Deploy
+
+Basic install.
+
 ```bash
 helm upgrade --install skills-plugin chart/ -n skills-plugin --create-namespace
+```
+
+With mlflow support for observability.
+
+```bash
+COOKIE=$(openssl rand -base64 32)
+helm upgrade --install skills-plugin chart/ -n skills-plugin --create-namespace --set mlflow.enabled=true --set mlflow.oauth.cookieSecret=$COOKIE
 ```
 
 ## Key Design Decisions
@@ -123,6 +141,16 @@ helm upgrade --install skills-plugin chart/ -n skills-plugin --create-namespace
 - **Chat nav route**: Uses `/skills-plugin/chat` (not `/skills-plugin`) to avoid prefix-match highlighting all nav items.
 - **MLflow OTel tracing**: All agent loop executions (chat and scheduled tasks) are traced via OpenTelemetry and exported to MLflow's OTLP endpoint (`/v1/traces`). Hierarchical spans: AGENT (root) → CHAT_MODEL (per LLM call) → TOOL (per shell execution). Each chat session maps to a separate MLflow experiment (by session name); scheduled tasks use `"Scheduled: " + task.Name`. Per-experiment `TracerProvider` instances are lazily created and cached, each with its own OTLP HTTP exporter configured with the `x-mlflow-experiment-id` header. The `ghcr.io/mlflow/mlflow` image requires an explicit `mlflow server` command (Python entrypoint, not a server by default) and `--disable-security-middleware` for the OTLP endpoint to accept traces without auth.
 - **MLflow with OAuth proxy**: Optional MLflow deployment (`mlflow.enabled: false` by default) with OpenShift oauth-proxy sidecar for SSO authentication. Uses the standard OpenShift pattern: serving cert annotation on service auto-provisions a TLS secret, oauth-proxy serves HTTPS on :8443 with those certs, route uses `reencrypt` termination, and the ServiceAccount has the `oauth-redirectreference` annotation. Route is always created when mlflow is enabled (edge TLS without oauth, reencrypt with oauth). All resources named `{{ .Values.plugin.name }}-mlflow`.
+- **Multi-tenancy and RBAC**: Per-user data ownership and role-based access control using OpenShift RBAC primitives:
+  - **User identity**: Extracted from bearer token via Kubernetes TokenReview API (the OpenShift console proxy forwards the user's token via `authorization: UserToken` in ConsolePlugin CR). Cached 60s keyed by SHA-256 of token.
+  - **Admin detection**: SubjectAccessReview against virtual resource `skills.openshift.io/plugins` verb `admin`. No CRD needed — SAR works against RBAC rules for unregistered API groups. Two ClusterRoles deployed: `{plugin-name}-user` (verb `use`) and `{plugin-name}-admin` (verbs `use`, `admin`).
+  - **Ownership**: `owner` column on `sessions`, `scheduled_tasks`, `skills`, `maas_endpoints`. Set to username at creation time.
+  - **Visibility**: Skills and MaaS endpoints have `is_global` flag. Private resources visible only to owner. Global resources readable by all, editable by owner/admin only. Sessions and scheduled tasks are owner-scoped (no global flag — each user sees only their own, admins see all).
+  - **Settings/DB export**: Admin-only writes (`SetConfig`, `ExportDatabase`, `ImportDatabase` return 403 for non-admins). `GetConfig` readable by all.
+  - **Migration safety**: Existing data migrated to `is_global=1` on upgrade so nothing disappears. Pre-existing sessions/tasks with `owner=''` visible to admins only. One-time migration guarded by `rbac_migrated` config flag.
+  - **Dev mode fallback**: When no kube client is available (local dev, no in-cluster config), all requests treated as anonymous admin — no auth enforcement.
+  - **Scheduled task execution context**: Tasks run asynchronously via cron/timer with no HTTP request. Owner captured at task creation time. `getOrCreateSession()` propagates task owner to auto-created sessions so results appear in the correct user's chat list.
+  - **Frontend auth**: `useAuth()` hook with module-level singleton cache (fetched once via `GET /api/auth/me`, shared across all page components). Each page is an independent React tree loaded via console SDK `$codeRef` — no shared provider wrapper needed.
 
 ## Go Module
 - Module: `github.com/eformat/openshift-skills-plugin`

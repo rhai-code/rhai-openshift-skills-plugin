@@ -42,8 +42,10 @@ import {
   setConfig,
   MaaSEndpoint,
 } from '../utils/api';
+import { useAuth } from '../utils/AuthContext';
 
 export default function SettingsPage() {
+  const { username, isAdmin } = useAuth();
   const [endpoints, setEndpoints] = React.useState<MaaSEndpoint[]>([]);
   const [showCreate, setShowCreate] = React.useState(false);
   const [showEdit, setShowEdit] = React.useState(false);
@@ -181,6 +183,7 @@ export default function SettingsPage() {
                   rows={4}
                   placeholder="Add custom instructions here..."
                   aria-label="System prompt"
+                  isDisabled={!isAdmin}
                 />
                 <FormHelperText>
                   <HelperText>
@@ -191,9 +194,15 @@ export default function SettingsPage() {
                 </FormHelperText>
               </FormGroup>
               <Split hasGutter className="pf-v6-u-mt-sm">
-                <SplitItem>
-                  <Button variant="primary" onClick={handleSaveSystemPrompt}>Save</Button>
-                </SplitItem>
+                {isAdmin ? (
+                  <SplitItem>
+                    <Button variant="primary" onClick={handleSaveSystemPrompt}>Save</Button>
+                  </SplitItem>
+                ) : (
+                  <SplitItem>
+                    <Alert variant="info" title="Admin access required to modify system prompt" isInline isPlain />
+                  </SplitItem>
+                )}
                 {systemPromptSaved && (
                   <SplitItem>
                     <Alert variant="success" title="System prompt saved" isInline isPlain />
@@ -212,6 +221,7 @@ export default function SettingsPage() {
                 Add Endpoint
               </Button>
             </SplitItem>
+
           </Split>
         </PageSection>
         <PageSection>
@@ -230,15 +240,21 @@ export default function SettingsPage() {
                     actions: (
                       <>
                         <Button variant="link" onClick={() => handleHealthCheck(ep.id)}>Health Check</Button>
-                        <Button variant="link" onClick={() => openEdit(ep)}>Edit</Button>
-                        <Button variant="link" isDanger onClick={() => handleDelete(ep.id)}>Delete</Button>
+                        {(isAdmin || ep.owner === username) && (
+                          <>
+                            <Button variant="link" onClick={() => openEdit(ep)}>Edit</Button>
+                            <Button variant="link" isDanger onClick={() => handleDelete(ep.id)}>Delete</Button>
+                          </>
+                        )}
                       </>
                     ),
                   }}
                 >
                   <CardTitle>
                     {ep.name}{' '}
-                    <Label color={ep.enabled ? 'green' : 'grey'}>{ep.provider_type}</Label>
+                    <Label color={ep.enabled ? 'green' : 'grey'}>{ep.provider_type}</Label>{' '}
+                    <Label color={ep.is_global ? 'blue' : 'orange'}>{ep.is_global ? 'Global' : 'Private'}</Label>
+                    {ep.owner && <>{' '}<Label color="grey">{ep.owner}</Label></>}
                   </CardTitle>
                 </CardHeader>
                 <CardBody>
@@ -280,35 +296,39 @@ export default function SettingsPage() {
           )}
         </PageSection>
 
-        <PageSection>
-          <Title headingLevel="h1">Database</Title>
-        </PageSection>
-        <PageSection>
-          <Card isCompact>
-            <CardBody>
-              <Split hasGutter>
-                <SplitItem>
-                  <Button variant="secondary" onClick={handleExport}>Export Database</Button>
-                </SplitItem>
-                <SplitItem>
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    accept=".db,.sqlite,.sqlite3"
-                    style={{ display: 'none' }}
-                    onChange={handleImport}
-                  />
-                  <Button variant="secondary" onClick={() => fileInputRef.current?.click()} isLoading={importing} isDisabled={importing}>
-                    Import Database
-                  </Button>
-                </SplitItem>
-              </Split>
-              {dbMessage && (
-                <Alert variant={dbMessage.type} title={dbMessage.text} isInline className="pf-v6-u-mt-sm" />
-              )}
-            </CardBody>
-          </Card>
-        </PageSection>
+        {isAdmin && (
+          <>
+            <PageSection>
+              <Title headingLevel="h1">Database</Title>
+            </PageSection>
+            <PageSection>
+              <Card isCompact>
+                <CardBody>
+                  <Split hasGutter>
+                    <SplitItem>
+                      <Button variant="secondary" onClick={handleExport}>Export Database</Button>
+                    </SplitItem>
+                    <SplitItem>
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        accept=".db,.sqlite,.sqlite3"
+                        style={{ display: 'none' }}
+                        onChange={handleImport}
+                      />
+                      <Button variant="secondary" onClick={() => fileInputRef.current?.click()} isLoading={importing} isDisabled={importing}>
+                        Import Database
+                      </Button>
+                    </SplitItem>
+                  </Split>
+                  {dbMessage && (
+                    <Alert variant={dbMessage.type} title={dbMessage.text} isInline className="pf-v6-u-mt-sm" />
+                  )}
+                </CardBody>
+              </Card>
+            </PageSection>
+          </>
+        )}
 
       {/* Create modal */}
       <Modal

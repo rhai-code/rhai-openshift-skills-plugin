@@ -39,6 +39,12 @@ func GetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func SetConfig(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
+	if !user.IsAdmin {
+		httpError(w, http.StatusForbidden, "admin access required")
+		return
+	}
+
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		httpError(w, http.StatusBadRequest, "key is required")

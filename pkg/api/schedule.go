@@ -186,11 +186,11 @@ func executeScheduledTask(taskID int64) {
 	var sessionID sql.NullString
 	err := db.QueryRow(`SELECT id, name, COALESCE(description,''), skill_id, schedule, service_account, namespace,
 		provider, model, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(container_image,''),
-		COALESCE(temperature, 0.7), COALESCE(max_tokens, 0), session_id
+		COALESCE(temperature, 0.7), COALESCE(max_tokens, 0), session_id, COALESCE(owner,'')
 		FROM scheduled_tasks WHERE id = ? AND enabled = 1`, taskID).
 		Scan(&task.ID, &task.Name, &task.Description, &skillID, &task.Schedule, &task.ServiceAccount,
 			&task.Namespace, &task.Provider, &task.Model, &task.BaseURL, &task.APIKey, &task.ContainerImage,
-			&task.Temperature, &task.MaxTokens, &sessionID)
+			&task.Temperature, &task.MaxTokens, &sessionID, &task.Owner)
 	if err != nil {
 		// Task not found or disabled — skip silently
 		log.Printf("Skipping task %d: not found or disabled", taskID)
@@ -234,8 +234,8 @@ func getOrCreateSession(db *sql.DB, sessionID sql.NullString, taskID int64, task
 		log.Printf("Session %s for task %d no longer exists, creating new session", sessionID.String, taskID)
 	}
 	sid := "sched-" + strconv.FormatInt(task.ID, 10) + "-" + strconv.FormatInt(time.Now().Unix(), 10)
-	db.Exec("INSERT INTO sessions (id, name, provider, model, base_url) VALUES (?, ?, ?, ?, ?)",
-		sid, "Scheduled: "+task.Name, task.Provider, task.Model, task.BaseURL)
+	db.Exec("INSERT INTO sessions (id, name, provider, model, base_url, owner) VALUES (?, ?, ?, ?, ?, ?)",
+		sid, "Scheduled: "+task.Name, task.Provider, task.Model, task.BaseURL, task.Owner)
 	db.Exec("UPDATE scheduled_tasks SET session_id = ? WHERE id = ?", sid, taskID)
 	return sid
 }
@@ -485,12 +485,21 @@ type createScheduledTaskRequest struct {
 }
 
 func ListScheduledTasks(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	db := database.GetDB()
-	rows, err := db.Query(`SELECT id, name, COALESCE(description,''), skill_id, schedule, service_account, namespace,
+
+	var rows *sql.Rows
+	var err error
+	baseQuery := `SELECT id, name, COALESCE(description,''), skill_id, schedule, service_account, namespace,
 		enabled, last_run, next_run, run_count, session_id, provider, model, COALESCE(base_url,''),
 		COALESCE(container_image,''), COALESCE(temperature, 0.7), COALESCE(max_tokens, 0),
-		COALESCE(run_once, 0), COALESCE(run_once_delay, ''),
-		created_at, updated_at FROM scheduled_tasks ORDER BY name`)
+		COALESCE(run_once, 0), COALESCE(run_once_delay, ''), COALESCE(owner,''),
+		created_at, updated_at FROM scheduled_tasks`
+	if user.IsAdmin {
+		rows, err = db.Query(baseQuery + " ORDER BY name")
+	} else {
+		rows, err = db.Query(baseQuery+" WHERE owner = ? ORDER BY name", user.Username)
+	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -507,7 +516,7 @@ func ListScheduledTasks(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &skillID, &t.Schedule, &t.ServiceAccount,
 			&t.Namespace, &enabled, &lastRun, &nextRun, &t.RunCount, &sessionID,
 			&t.Provider, &t.Model, &t.BaseURL, &t.ContainerImage, &t.Temperature, &t.MaxTokens,
-			&runOnce, &t.RunOnceDelay,
+			&runOnce, &t.RunOnceDelay, &t.Owner,
 			&t.CreatedAt, &t.UpdatedAt); err != nil {
 			httpError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -532,6 +541,7 @@ func ListScheduledTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func CreateScheduledTask(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	var req createScheduledTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid JSON")
@@ -576,10 +586,10 @@ func CreateScheduledTask(w http.ResponseWriter, r *http.Request) {
 			req.Schedule = "0 0 * * *" // placeholder for run-once tasks
 		}
 	}
-	result, err := db.Exec(`INSERT INTO scheduled_tasks (name, description, skill_id, schedule, service_account, namespace, provider, model, base_url, api_key, container_image, temperature, max_tokens, run_once, run_once_delay)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	result, err := db.Exec(`INSERT INTO scheduled_tasks (name, description, skill_id, schedule, service_account, namespace, provider, model, base_url, api_key, container_image, temperature, max_tokens, run_once, run_once_delay, owner)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.Name, req.Description, req.SkillID, req.Schedule, req.ServiceAccount, req.Namespace,
-		req.Provider, req.Model, req.BaseURL, req.APIKey, req.ContainerImage, req.Temperature, req.MaxTokens, runOnce, req.RunOnceDelay)
+		req.Provider, req.Model, req.BaseURL, req.APIKey, req.ContainerImage, req.Temperature, req.MaxTokens, runOnce, req.RunOnceDelay, user.Username)
 	if err != nil {
 		httpError(w, http.StatusConflict, err.Error())
 		return
@@ -594,6 +604,7 @@ func CreateScheduledTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func UpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
 	var req createScheduledTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -602,6 +613,16 @@ func UpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db := database.GetDB()
+
+	var owner string
+	if err := db.QueryRow("SELECT COALESCE(owner,'') FROM scheduled_tasks WHERE id = ?", id).Scan(&owner); err != nil {
+		httpError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if !authorizeResource(w, user, owner) {
+		return
+	}
+
 	now := time.Now()
 
 	// Validate cron expression for recurring tasks
@@ -644,10 +665,21 @@ func UpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func DeleteScheduledTask(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+	db := database.GetDB()
+
+	var owner string
+	if err := db.QueryRow("SELECT COALESCE(owner,'') FROM scheduled_tasks WHERE id = ?", id).Scan(&owner); err != nil {
+		httpError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if !authorizeResource(w, user, owner) {
+		return
+	}
+
 	removeCronJob(id)
 	removeRunOnce(id)
-	db := database.GetDB()
 	db.Exec("DELETE FROM task_execution_history WHERE task_id = ?", id)
 	db.Exec("DELETE FROM scheduled_tasks WHERE id = ?", id)
 	jsonResponse(w, map[string]string{"message": "scheduled task deleted"})
@@ -658,6 +690,7 @@ type toggleRequest struct {
 }
 
 func ToggleScheduledTask(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
 	var req toggleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -666,6 +699,15 @@ func ToggleScheduledTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db := database.GetDB()
+
+	var owner string
+	if err := db.QueryRow("SELECT COALESCE(owner,'') FROM scheduled_tasks WHERE id = ?", id).Scan(&owner); err != nil {
+		httpError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if !authorizeResource(w, user, owner) {
+		return
+	}
 	enabled := 0
 	if req.Enabled {
 		enabled = 1
@@ -690,16 +732,37 @@ func ToggleScheduledTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func DeleteTaskHistory(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
 	db := database.GetDB()
+
+	var owner string
+	if err := db.QueryRow("SELECT COALESCE(owner,'') FROM scheduled_tasks WHERE id = ?", id).Scan(&owner); err != nil {
+		httpError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if !authorizeResource(w, user, owner) {
+		return
+	}
+
 	db.Exec("DELETE FROM task_execution_history WHERE task_id = ?", id)
 	db.Exec("UPDATE scheduled_tasks SET run_count = 0, last_run = NULL, updated_at = ? WHERE id = ?", time.Now(), id)
 	jsonResponse(w, map[string]string{"message": "execution history deleted"})
 }
 
 func GetTaskHistory(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
 	db := database.GetDB()
+
+	var owner string
+	if err := db.QueryRow("SELECT COALESCE(owner,'') FROM scheduled_tasks WHERE id = ?", id).Scan(&owner); err != nil {
+		httpError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if !authorizeResource(w, user, owner) {
+		return
+	}
 	rows, err := db.Query(`SELECT id, task_id, started_at, completed_at, duration_ms, status, COALESCE(error_message,''), COALESCE(output,'')
 		FROM task_execution_history WHERE task_id = ? ORDER BY started_at DESC LIMIT 50`, id)
 	if err != nil {

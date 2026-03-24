@@ -34,8 +34,10 @@ import {
   uploadSkill,
   Skill,
 } from '../utils/api';
+import { useAuth } from '../utils/AuthContext';
 
 export default function SkillsPage() {
+  const { username, isAdmin } = useAuth();
   const [skills, setSkills] = React.useState<Skill[]>([]);
   const [showCreate, setShowCreate] = React.useState(false);
   const [showUpload, setShowUpload] = React.useState(false);
@@ -46,6 +48,9 @@ export default function SkillsPage() {
   const [content, setContent] = React.useState('');
   const [uploadFile, setUploadFile] = React.useState<File | null>(null);
   const [uploadFilename, setUploadFilename] = React.useState('');
+
+  const canEdit = (s: Skill) => isAdmin || s.owner === username;
+  const canToggleGlobal = (s: Skill) => isAdmin || s.owner === username;
 
   React.useEffect(() => { loadSkills(); }, []);
 
@@ -166,12 +171,12 @@ export default function SkillsPage() {
                   <Card isCompact>
                     <CardHeader
                       actions={{
-                        actions: (
+                        actions: canEdit(s) ? (
                           <>
                             <Button variant="link" onClick={() => openEdit(s)}>Edit</Button>
                             <Button variant="link" isDanger onClick={() => handleDelete(s.id)}>Delete</Button>
                           </>
-                        ),
+                        ) : undefined,
                       }}
                     >
                       <CardTitle>
@@ -182,6 +187,7 @@ export default function SkillsPage() {
                               id={'toggle-' + s.id}
                               isChecked={s.enabled}
                               onChange={() => handleToggle(s)}
+                              isDisabled={!canEdit(s)}
                               aria-label="Enable skill"
                             />
                           </SplitItem>
@@ -190,9 +196,37 @@ export default function SkillsPage() {
                     </CardHeader>
                     <CardBody>
                       <p>{s.description}</p>
-                      <Label color={s.enabled ? 'green' : 'grey'}>
-                        {s.enabled ? 'Enabled' : 'Disabled'}
-                      </Label>
+                      <Split hasGutter>
+                        <SplitItem>
+                          <Label color={s.enabled ? 'green' : 'grey'}>
+                            {s.enabled ? 'Enabled' : 'Disabled'}
+                          </Label>
+                        </SplitItem>
+                        <SplitItem>
+                          <Label color={s.is_global ? 'blue' : 'orange'}>
+                            {s.is_global ? 'Global' : 'Private'}
+                          </Label>
+                        </SplitItem>
+                        {s.owner && (
+                          <SplitItem>
+                            <Label color="grey">{s.owner}</Label>
+                          </SplitItem>
+                        )}
+                        {canToggleGlobal(s) && (
+                          <SplitItem>
+                            <Switch
+                              id={'global-' + s.id}
+                              label="Share globally"
+                              isChecked={s.is_global}
+                              onChange={async () => {
+                                await updateSkill(s.id, { is_global: !s.is_global } as any);
+                                loadSkills();
+                              }}
+                              isReversed
+                            />
+                          </SplitItem>
+                        )}
+                      </Split>
                     </CardBody>
                   </Card>
                 </GalleryItem>

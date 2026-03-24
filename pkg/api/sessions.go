@@ -25,6 +25,7 @@ type updateSessionSkillsRequest struct {
 }
 
 func CreateSession(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	var req createSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid JSON")
@@ -44,8 +45,8 @@ func CreateSession(w http.ResponseWriter, r *http.Request) {
 		req.SystemPrompt = GetSystemPrompt()
 	}
 	db := database.GetDB()
-	_, err := db.Exec("INSERT INTO sessions (id, name, provider, model, base_url, system_prompt, temperature, max_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		id, name, req.Provider, req.Model, req.BaseURL, req.SystemPrompt, req.Temperature, req.MaxTokens)
+	_, err := db.Exec("INSERT INTO sessions (id, name, provider, model, base_url, system_prompt, temperature, max_tokens, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, name, req.Provider, req.Model, req.BaseURL, req.SystemPrompt, req.Temperature, req.MaxTokens, user.Username)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -60,8 +61,16 @@ func CreateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func ListSessions(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	db := database.GetDB()
-	rows, err := db.Query("SELECT id, name, provider, model, COALESCE(base_url,''), COALESCE(system_prompt,''), temperature, max_tokens, created_at, updated_at FROM sessions ORDER BY updated_at DESC")
+
+	var rows *sql.Rows
+	var err error
+	if user.IsAdmin {
+		rows, err = db.Query("SELECT id, name, provider, model, COALESCE(base_url,''), COALESCE(system_prompt,''), temperature, max_tokens, COALESCE(owner,''), created_at, updated_at FROM sessions ORDER BY updated_at DESC")
+	} else {
+		rows, err = db.Query("SELECT id, name, provider, model, COALESCE(base_url,''), COALESCE(system_prompt,''), temperature, max_tokens, COALESCE(owner,''), created_at, updated_at FROM sessions WHERE owner = ? ORDER BY updated_at DESC", user.Username)
+	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -71,7 +80,7 @@ func ListSessions(w http.ResponseWriter, r *http.Request) {
 	sessions := []database.Session{}
 	for rows.Next() {
 		var s database.Session
-		if err := rows.Scan(&s.ID, &s.Name, &s.Provider, &s.Model, &s.BaseURL, &s.SystemPrompt, &s.Temperature, &s.MaxTokens, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.Provider, &s.Model, &s.BaseURL, &s.SystemPrompt, &s.Temperature, &s.MaxTokens, &s.Owner, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			httpError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -81,18 +90,22 @@ func ListSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func GetSession(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	id := mux.Vars(r)["id"]
 	db := database.GetDB()
 
 	var s database.Session
-	err := db.QueryRow("SELECT id, name, provider, model, COALESCE(base_url,''), COALESCE(system_prompt,''), temperature, max_tokens, created_at, updated_at FROM sessions WHERE id = ?", id).
-		Scan(&s.ID, &s.Name, &s.Provider, &s.Model, &s.BaseURL, &s.SystemPrompt, &s.Temperature, &s.MaxTokens, &s.CreatedAt, &s.UpdatedAt)
+	err := db.QueryRow("SELECT id, name, provider, model, COALESCE(base_url,''), COALESCE(system_prompt,''), temperature, max_tokens, COALESCE(owner,''), created_at, updated_at FROM sessions WHERE id = ?", id).
+		Scan(&s.ID, &s.Name, &s.Provider, &s.Model, &s.BaseURL, &s.SystemPrompt, &s.Temperature, &s.MaxTokens, &s.Owner, &s.CreatedAt, &s.UpdatedAt)
 	if err == sql.ErrNoRows {
 		httpError(w, http.StatusNotFound, "session not found")
 		return
 	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !authorizeResource(w, user, s.Owner) {
 		return
 	}
 
@@ -135,6 +148,7 @@ func GetSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func UpdateSessionSkills(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	id := mux.Vars(r)["id"]
 	var req updateSessionSkillsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -144,11 +158,14 @@ func UpdateSessionSkills(w http.ResponseWriter, r *http.Request) {
 
 	db := database.GetDB()
 
-	// Verify session exists
-	var exists int
-	err := db.QueryRow("SELECT COUNT(*) FROM sessions WHERE id = ?", id).Scan(&exists)
-	if err != nil || exists == 0 {
+	// Verify session exists and check ownership
+	var owner string
+	err := db.QueryRow("SELECT COALESCE(owner,'') FROM sessions WHERE id = ?", id).Scan(&owner)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if !authorizeResource(w, user, owner) {
 		return
 	}
 
@@ -162,8 +179,20 @@ func UpdateSessionSkills(w http.ResponseWriter, r *http.Request) {
 }
 
 func DeleteSession(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	id := mux.Vars(r)["id"]
 	db := database.GetDB()
+
+	var owner string
+	err := db.QueryRow("SELECT COALESCE(owner,'') FROM sessions WHERE id = ?", id).Scan(&owner)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if !authorizeResource(w, user, owner) {
+		return
+	}
+
 	db.Exec("DELETE FROM session_skills WHERE session_id = ?", id)
 	db.Exec("DELETE FROM messages WHERE session_id = ?", id)
 	db.Exec("DELETE FROM sessions WHERE id = ?", id)

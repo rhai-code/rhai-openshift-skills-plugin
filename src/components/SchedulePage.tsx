@@ -51,8 +51,10 @@ import {
   MaaSEndpoint,
   ModelInfo,
 } from '../utils/api';
+import { useAuth } from '../utils/AuthContext';
 
 export default function SchedulePage() {
+  const { isAdmin } = useAuth();
   const [tasks, setTasks] = React.useState<ScheduledTask[]>([]);
   const [skills, setSkills] = React.useState<Skill[]>([]);
   const [endpoints, setEndpoints] = React.useState<MaaSEndpoint[]>([]);
@@ -264,6 +266,7 @@ export default function SchedulePage() {
                   <CardTitle>
                     {t.name}{' '}
                     <Label color={t.enabled ? 'green' : 'grey'}>{t.enabled ? 'Active' : 'Paused'}</Label>
+                    {isAdmin && t.owner && <>{' '}<Label color="grey">{t.owner}</Label></>}
                   </CardTitle>
                 </CardHeader>
                 <CardBody>
