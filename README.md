@@ -2,9 +2,50 @@
 
 An OpenShift Console Plugin that manages SKILLS as Kubernetes Jobs.
 
-- recently added OpenShift multi-tenancy support for users (see [CLAUDE.md](CLAUDE.md) for details).
-
   ![demo/skills-menu.png](demo/skills-menu.png)
+
+## Multi-Tenancy & RBAC
+
+The plugin uses OpenShift RBAC to control access. Two ClusterRoles are deployed with the Helm chart:
+
+- **`skills-plugin-user`** — grants basic access
+- **`skills-plugin-admin`** — grants full administrative access
+
+Bind roles to users:
+
+```bash
+oc adm policy add-cluster-role-to-user skills-plugin-admin <admin-user>
+oc adm policy add-cluster-role-to-user skills-plugin-user <regular-user>
+```
+
+### Permissions Summary
+
+**Chat Sessions & Scheduled Tasks** (owner-scoped, no global sharing)
+
+| Action | User | Admin |
+|---|---|---|
+| Create | Yes | Yes |
+| View / Edit / Delete | Own only | All |
+
+**Skills & MaaS Endpoints** (support global sharing)
+
+| Action | User | Admin |
+|---|---|---|
+| Create | Yes (private by default) | Yes |
+| View global | Yes (read-only) | Yes |
+| View private | Own only | All |
+| Edit / Delete | Own only | All |
+| Share globally | Own only | All |
+
+**Settings & Database**
+
+| Action | User | Admin |
+|---|---|---|
+| View system prompt | Yes (read-only) | Yes |
+| Edit system prompt | No | Yes |
+| Export / Import database | No | Yes |
+
+## Install
 
 To install as a cluster-admin
 
