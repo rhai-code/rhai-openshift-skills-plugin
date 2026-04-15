@@ -19,6 +19,14 @@ type createEndpointRequest struct {
 	IsGlobal     *bool  `json:"is_global,omitempty"`
 }
 
+type updateEndpointRequest struct {
+	Name         *string `json:"name,omitempty"`
+	URL          *string `json:"url,omitempty"`
+	APIKey       *string `json:"api_key,omitempty"`
+	ProviderType *string `json:"provider_type,omitempty"`
+	IsGlobal     *bool   `json:"is_global,omitempty"`
+}
+
 func ListEndpoints(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r)
 	db := database.GetDB()
@@ -110,14 +118,24 @@ func UpdateEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req createEndpointRequest
+	var req updateEndpointRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
-	db.Exec("UPDATE maas_endpoints SET name=?, url=?, api_key=?, provider_type=? WHERE id=?",
-		req.Name, req.URL, req.APIKey, req.ProviderType, id)
+	if req.Name != nil {
+		db.Exec("UPDATE maas_endpoints SET name=? WHERE id=?", *req.Name, id)
+	}
+	if req.URL != nil {
+		db.Exec("UPDATE maas_endpoints SET url=? WHERE id=?", *req.URL, id)
+	}
+	if req.APIKey != nil {
+		db.Exec("UPDATE maas_endpoints SET api_key=? WHERE id=?", *req.APIKey, id)
+	}
+	if req.ProviderType != nil {
+		db.Exec("UPDATE maas_endpoints SET provider_type=? WHERE id=?", *req.ProviderType, id)
+	}
 	if req.IsGlobal != nil {
 		isGlobal := 0
 		if *req.IsGlobal {

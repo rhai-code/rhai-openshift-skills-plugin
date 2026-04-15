@@ -29,6 +29,7 @@ import {
   DescriptionListTerm,
   DescriptionListDescription,
   Alert,
+  Switch,
 } from '@patternfly/react-core';
 import {
   listEndpoints,
@@ -256,6 +257,18 @@ export default function SettingsPage() {
                     <Label color={ep.is_global ? 'blue' : 'orange'}>{ep.is_global ? 'Global' : 'Private'}</Label>
                     {ep.owner && <>{' '}<Label color="grey">{ep.owner}</Label></>}
                   </CardTitle>
+                  {(isAdmin || ep.owner === username) && (
+                    <Switch
+                      id={'global-ep-' + ep.id}
+                      label="Share globally"
+                      isChecked={ep.is_global}
+                      onChange={async () => {
+                        await updateEndpoint(ep.id, { is_global: !ep.is_global } as any);
+                        loadEndpoints();
+                      }}
+                      isReversed
+                    />
+                  )}
                 </CardHeader>
                 <CardBody>
                   <DescriptionList isHorizontal isCompact>
