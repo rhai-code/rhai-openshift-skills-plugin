@@ -15,7 +15,7 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 - **`console-extensions.json`** - Plugin routes under `/skills-plugin/{chat,skills,schedule,settings}` in admin perspective "Skills" nav section
 
 ### Backend (Go)
-- **`cmd/backend/main.go`** - HTTP server (gorilla/mux), serves plugin static files + API routes, TLS support for OpenShift serving certs, initializes kube client on startup (non-fatal if unavailable), initializes MLflow tracing (`mlflow.Init("")`) with deferred `Shutdown()`. Wires `AuthMiddleware` on the API subrouter and registers `/api/auth/me`.
+- **`cmd/backend/main.go`** - HTTP server (gorilla/mux), serves plugin static files + API routes, TLS support for OpenShift serving certs, initializes kube client on startup (non-fatal if unavailable), seeds default MaaS endpoint from `maas-secret` if present (`SeedMaaSFromSecret()`), initializes MLflow tracing (`mlflow.Init("")`) with deferred `Shutdown()`. Wires `AuthMiddleware` on the API subrouter and registers `/api/auth/me`.
 - **`pkg/api/`** - REST handlers:
   - `auth.go` - Authentication and authorization middleware:
     - `UserInfo` struct: `Username string`, `Groups []string`, `IsAdmin bool`
@@ -57,6 +57,7 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
   - `ExecCommand(ep, command, timeout)` - SPDY exec into the pod
   - `DeleteExecutorPod(ep)` - cleanup after agent loop completes
   - `Init()` - initializes in-cluster k8s client (`clientset`, `restConfig`)
+- **`pkg/kube/secrets.go`** - `GetSecretData(namespace, name)` - reads a Kubernetes secret and returns its data fields as strings. `GetNamespaceAnnotation(namespace, annotation)` - reads a single annotation from a namespace
 - **`pkg/kube/jobs.go`** - `RunJob()` for simple container-only tasks (not used by agent loop), `sanitizeName()` for k8s-safe names
 - **`pkg/maas/client.go`** - MaaS client:
   - `NewClient(baseURL, registryURL, apiKey, model)` - baseURL is model-specific inference URL, registryURL is MaaS API base
@@ -93,7 +94,7 @@ An OpenShift Console Dynamic Plugin for scheduled execution of LLM-driven agent 
 ### Helm Chart (`chart/`)
 - **`consoleplugin.yaml`** - ConsolePlugin CR (v1 API) with proxy: `endpoint.type: Service`, `authorization: UserToken`
 - **`deployment.yaml`** - Sets `POD_NAMESPACE` via downward API, TLS from serving cert secret, PVC for SQLite data, `MLFLOW_TRACKING_URI` env var (when mlflow enabled, points to internal mlflow service)
-- **`rbac.yaml`** - ClusterRole for batch jobs CRUD, serviceaccounts/namespaces list; namespace-scoped Role for pods create/delete, pods/log get, pods/exec create. ClusterRole/Binding for plugin SA to create TokenReviews and SubjectAccessReviews (RBAC auth). User-facing ClusterRoles: `{plugin-name}-user` (verb `use` on `skills.openshift.io/plugins`) and `{plugin-name}-admin` (verbs `use`, `admin`). Bind to users via `oc adm policy add-cluster-role-to-user`.
+- **`rbac.yaml`** - ClusterRole for batch jobs CRUD, serviceaccounts/namespaces list; namespace-scoped Role for pods create/delete, pods/log get, pods/exec create. Namespace-scoped Role for secrets get (used by maas-secret auto-seed). ClusterRole/Binding for plugin SA to create TokenReviews and SubjectAccessReviews (RBAC auth). User-facing ClusterRoles: `{plugin-name}-user` (verb `use` on `skills.openshift.io/plugins`) and `{plugin-name}-admin` (verbs `use`, `admin`). Bind to users via `oc adm policy add-cluster-role-to-user`.
 - **`enable-plugin.yaml`** - Post-install/upgrade hook Job that patches Console CR to enable plugin (avoids ownership conflicts with other operators)
 - **`values.yaml`** - Image: `quay.io/eformat/openshift-skills-plugin:latest`, PVC 2Gi, TLS enabled, mlflow disabled by default
 - **MLflow templates** (all gated by `.Values.mlflow.enabled`):
@@ -136,6 +137,7 @@ helm upgrade --install skills-plugin chart/ -n skills-plugin --create-namespace 
 - **Shell tool JSON repair**: `repairToolCallJSON()` in agent.go attempts to fix truncated/malformed JSON in LLM-generated tool call arguments (common with smaller models producing unescaped quotes in shell commands). The shell tool description also instructs models to write complex scripts to temp files via heredocs to avoid escaping issues.
 - **Per-session LLM settings**: Each chat session stores its own `temperature` and `max_tokens` (defaults 0.2 and 2048), passed to `RunAgentLoop` via `AgentOptions`.
 - **Token security**: API keys are never returned to the frontend. `ScheduledTask.APIKey` uses `json:"-"`, `ListEndpoints` returns `"****"`, Settings UI shows "Configured"/"Not set".
+- **MaaS auto-seed from secret**: On startup, `SeedMaaSFromSecret()` checks for a `maas-secret` Kubernetes secret in `POD_NAMESPACE`. If found and no endpoints exist yet, creates a default global endpoint owned by `admin` using `data.token` as the API key. The registry URL is constructed from the first semicolon-separated URL in `data.api_base_urls` by extracting scheme+host and appending `/maas-api` (e.g. `http://maas.example.com/model/v1` → `https://maas.example.com/maas-api`). Skips silently if the secret is missing, fields are empty, or endpoints already exist. Also starts a background goroutine (`watchMaaSTokenExpiry`) that reads the `rhai-tmm.dev/maas-auth-until` RFC3339 annotation on the namespace, sleeps until expiry, then re-reads the rotated secret and updates the API key on the seeded endpoint.
 - **Database portability**: Export/import of the SQLite database file via Settings page for migrating config between clusters. Import triggers `Reinit()` + `ReloadScheduler()`.
 - **No `<Page>` wrapper**: Console layout provides its own wrapper; adding `<Page>` causes a grey gap.
 - **Chat nav route**: Uses `/skills-plugin/chat` (not `/skills-plugin`) to avoid prefix-match highlighting all nav items.

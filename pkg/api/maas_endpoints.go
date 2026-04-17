@@ -3,13 +3,22 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/eformat/openshift-skills-plugin/pkg/database"
+	"github.com/eformat/openshift-skills-plugin/pkg/kube"
 	"github.com/eformat/openshift-skills-plugin/pkg/maas"
 	"github.com/gorilla/mux"
 )
+
+const maasSecretName = "Default MaaS"
 
 type createEndpointRequest struct {
 	Name         string `json:"name"`
@@ -249,4 +258,121 @@ func HealthCheckEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]any{"healthy": true})
+}
+
+// readMaaSSecret reads the maas-secret and returns the token and registry base URL.
+func readMaaSSecret(ns string) (token, baseURL string, err error) {
+	data, err := kube.GetSecretData(ns, "maas-secret")
+	if err != nil {
+		return "", "", err
+	}
+
+	token = strings.TrimSpace(data["token"])
+	apiBaseURLs := strings.TrimSpace(data["api_base_urls"])
+	if token == "" || apiBaseURLs == "" {
+		return "", "", fmt.Errorf("missing token or api_base_urls fields")
+	}
+
+	urls := strings.Split(apiBaseURLs, ";")
+	firstURL := strings.TrimSpace(urls[0])
+	if firstURL == "" {
+		return "", "", fmt.Errorf("api_base_urls first entry is empty")
+	}
+	parsed, err := url.Parse(firstURL)
+	if err != nil {
+		return "", "", fmt.Errorf("api_base_urls first entry is not a valid URL: %w", err)
+	}
+	baseURL = "https://" + parsed.Host + "/maas-api"
+	return token, baseURL, nil
+}
+
+// SeedMaaSFromSecret checks for a "maas-secret" in the pod namespace and creates
+// a default global MaaS endpoint from it if no endpoints exist yet.
+// It also starts a background goroutine to refresh the token when it expires
+// (based on the rhai-tmm.dev/maas-auth-until annotation on the namespace).
+func SeedMaaSFromSecret() {
+	ns := os.Getenv("POD_NAMESPACE")
+	if ns == "" {
+		return
+	}
+
+	token, baseURL, err := readMaaSSecret(ns)
+	if err != nil {
+		log.Printf("No maas-secret found in namespace %s (skipping auto-seed): %v", ns, err)
+		return
+	}
+
+	db := database.GetDB()
+
+	// Only seed if no endpoints exist yet
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM maas_endpoints").Scan(&count); err != nil {
+		log.Printf("Failed to check existing endpoints: %v", err)
+		return
+	}
+	if count > 0 {
+		log.Printf("MaaS endpoints already configured (%d), skipping auto-seed from secret", count)
+	} else {
+		_, err = db.Exec("INSERT INTO maas_endpoints (name, url, api_key, provider_type, owner, is_global) VALUES (?, ?, ?, ?, ?, ?)",
+			maasSecretName, baseURL, token, "openai-compatible", "admin", 1)
+		if err != nil {
+			log.Printf("Failed to seed MaaS endpoint from secret: %v", err)
+			return
+		}
+		log.Printf("Seeded default global MaaS endpoint from maas-secret (url: %s)", baseURL)
+	}
+
+	// Start background token refresh
+	go watchMaaSTokenExpiry(ns)
+}
+
+// watchMaaSTokenExpiry polls the namespace annotation rhai-tmm.dev/maas-auth-until
+// and refreshes the API key on the seeded endpoint when the token expires.
+func watchMaaSTokenExpiry(ns string) {
+	for {
+		expiry, err := kube.GetNamespaceAnnotation(ns, "rhai-tmm.dev/maas-auth-until")
+		if err != nil {
+			log.Printf("maas-secret refresh: failed to read namespace annotation: %v", err)
+			time.Sleep(60 * time.Second)
+			continue
+		}
+		if expiry == "" {
+			time.Sleep(60 * time.Second)
+			continue
+		}
+
+		expiryTime, err := time.Parse(time.RFC3339, expiry)
+		if err != nil {
+			log.Printf("maas-secret refresh: failed to parse expiry %q: %v", expiry, err)
+			time.Sleep(60 * time.Second)
+			continue
+		}
+
+		remaining := time.Until(expiryTime)
+		if remaining > 0 {
+			// Sleep until expiry, then re-check
+			log.Printf("maas-secret refresh: token expires at %s (in %s), waiting", expiryTime.Format(time.RFC3339), remaining.Round(time.Second))
+			time.Sleep(remaining)
+		}
+
+		// Token has expired — wait briefly for the secret to be rotated, then refresh
+		log.Printf("maas-secret refresh: token expired, waiting for secret rotation")
+		time.Sleep(10 * time.Second)
+
+		token, _, err := readMaaSSecret(ns)
+		if err != nil {
+			log.Printf("maas-secret refresh: failed to read rotated secret: %v", err)
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		db := database.GetDB()
+		result, err := db.Exec("UPDATE maas_endpoints SET api_key = ? WHERE name = ?", token, maasSecretName)
+		if err != nil {
+			log.Printf("maas-secret refresh: failed to update API key: %v", err)
+		} else {
+			rows, _ := result.RowsAffected()
+			log.Printf("maas-secret refresh: updated API key on %d endpoint(s)", rows)
+		}
+	}
 }
