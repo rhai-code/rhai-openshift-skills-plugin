@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ var (
 	authClient  *kubernetes.Clientset
 	authInitErr error
 	authOnce    sync.Once
+	devMode     = os.Getenv("DEV_MODE") == "true"
 )
 
 func initAuthClient() {
@@ -73,8 +75,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			// If no auth client available, allow anonymous access (dev mode)
-			if authClient == nil {
+			if authClient == nil && devMode {
 				ctx := context.WithValue(r.Context(), userContextKey, &UserInfo{Username: "anonymous", IsAdmin: true})
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
@@ -100,9 +101,12 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		if authClient == nil {
-			// No kube client — allow as anonymous admin in dev mode
-			ctx := context.WithValue(r.Context(), userContextKey, &UserInfo{Username: "anonymous", IsAdmin: true})
-			next.ServeHTTP(w, r.WithContext(ctx))
+			if devMode {
+				ctx := context.WithValue(r.Context(), userContextKey, &UserInfo{Username: "anonymous", IsAdmin: true})
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			httpError(w, http.StatusServiceUnavailable, "authentication service unavailable")
 			return
 		}
 

@@ -17,7 +17,15 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true
+		}
+		// Allow same-origin requests (console proxy)
+		host := r.Host
+		return strings.Contains(origin, host)
+	},
 }
 
 type chatMessageRequest struct {
@@ -184,15 +192,28 @@ sh /tmp/script.sh`
 }
 
 func WebSocketChat(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
 	sessionID := mux.Vars(r)["id"]
+
+	// Verify session ownership before upgrading the connection
+	db := database.GetDB()
+	var sessionOwner string
+	err := db.QueryRow("SELECT COALESCE(owner,'') FROM sessions WHERE id = ?", sessionID).Scan(&sessionOwner)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if !user.IsAdmin && user.Username != sessionOwner {
+		httpError(w, http.StatusForbidden, "access denied")
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade error: %v", err)
 		return
 	}
 	defer conn.Close()
-
-	db := database.GetDB()
 
 	for {
 		_, msgBytes, err := conn.ReadMessage()
@@ -208,8 +229,8 @@ func WebSocketChat(w http.ResponseWriter, r *http.Request) {
 
 		// Get session
 		var sess database.Session
-		err = db.QueryRow("SELECT id, name, provider, model, COALESCE(base_url,''), COALESCE(system_prompt,''), temperature, max_tokens FROM sessions WHERE id = ?", sessionID).
-			Scan(&sess.ID, &sess.Name, &sess.Provider, &sess.Model, &sess.BaseURL, &sess.SystemPrompt, &sess.Temperature, &sess.MaxTokens)
+		err = db.QueryRow("SELECT id, name, provider, model, COALESCE(base_url,''), COALESCE(system_prompt,''), temperature, max_tokens, COALESCE(owner,'') FROM sessions WHERE id = ?", sessionID).
+			Scan(&sess.ID, &sess.Name, &sess.Provider, &sess.Model, &sess.BaseURL, &sess.SystemPrompt, &sess.Temperature, &sess.MaxTokens, &sess.Owner)
 		if err != nil {
 			conn.WriteJSON(map[string]string{"error": "session not found"})
 			continue
@@ -265,7 +286,11 @@ func WebSocketChat(w http.ResponseWriter, r *http.Request) {
 		apiKey := ""
 		registryURL := ""
 		var wsKey, wsRegURL string
-		err = db.QueryRow("SELECT COALESCE(api_key,''), url FROM maas_endpoints WHERE enabled = 1 ORDER BY id LIMIT 1").Scan(&wsKey, &wsRegURL)
+		if user.IsAdmin {
+			err = db.QueryRow("SELECT COALESCE(api_key,''), url FROM maas_endpoints WHERE enabled = 1 ORDER BY id LIMIT 1").Scan(&wsKey, &wsRegURL)
+		} else {
+			err = db.QueryRow("SELECT COALESCE(api_key,''), url FROM maas_endpoints WHERE enabled = 1 AND (is_global = 1 OR owner = ?) ORDER BY id LIMIT 1", user.Username).Scan(&wsKey, &wsRegURL)
+		}
 		if err == nil {
 			apiKey = wsKey
 			registryURL = wsRegURL
