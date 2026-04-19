@@ -196,37 +196,29 @@ export default function SkillsPage() {
                     </CardHeader>
                     <CardBody>
                       <p>{s.description}</p>
-                      <Split hasGutter>
-                        <SplitItem>
-                          <Label color={s.enabled ? 'green' : 'grey'}>
-                            {s.enabled ? 'Enabled' : 'Disabled'}
-                          </Label>
-                        </SplitItem>
-                        <SplitItem>
-                          <Label color={s.is_global ? 'blue' : 'orange'}>
-                            {s.is_global ? 'Global' : 'Private'}
-                          </Label>
-                        </SplitItem>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', marginTop: '8px' }}>
+                        <Label color={s.enabled ? 'green' : 'grey'}>
+                          {s.enabled ? 'Enabled' : 'Disabled'}
+                        </Label>
+                        <Label color={s.is_global ? 'blue' : 'orange'}>
+                          {s.is_global ? 'Global' : 'Private'}
+                        </Label>
                         {s.owner && (
-                          <SplitItem>
-                            <Label color="grey">{s.owner}</Label>
-                          </SplitItem>
+                          <Label color="grey">{s.owner}</Label>
                         )}
                         {canToggleGlobal(s) && (
-                          <SplitItem>
-                            <Switch
-                              id={'global-' + s.id}
-                              label="Share globally"
-                              isChecked={s.is_global}
-                              onChange={async () => {
-                                await updateSkill(s.id, { is_global: !s.is_global } as any);
-                                loadSkills();
-                              }}
-                              isReversed
-                            />
-                          </SplitItem>
+                          <Switch
+                            id={'global-' + s.id}
+                            label="Share globally"
+                            isChecked={s.is_global}
+                            onChange={async () => {
+                              await updateSkill(s.id, { is_global: !s.is_global } as any);
+                              loadSkills();
+                            }}
+                            isReversed
+                          />
                         )}
-                      </Split>
+                      </div>
                     </CardBody>
                   </Card>
                 </GalleryItem>
