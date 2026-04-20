@@ -8,11 +8,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/eformat/openshift-skills-plugin/pkg/kube"
 	"github.com/eformat/openshift-skills-plugin/pkg/mlflow"
 )
 
@@ -328,10 +330,33 @@ func executeToolCall(tc ToolCall, shellExec ShellExecutor) string {
 }
 
 func executeLocalShell(command string) string {
+	// Execute in the agent-shell sidecar container (no kube credentials)
+	podName := os.Getenv("POD_NAME")
+	podNS := os.Getenv("POD_NAMESPACE")
+	container := os.Getenv("AGENT_SHELL_CONTAINER")
+	if podName != "" && podNS != "" && container != "" {
+		ep := &kube.ExecutorPod{Name: podName, Namespace: podNS, Container: container}
+		output, err := kube.ExecCommand(ep, command, 60*time.Second)
+		if err != nil {
+			return "Error: " + err.Error()
+		}
+		return output
+	}
+
+	// Fallback for dev mode (no kube client) — run locally with stripped env
+	log.Printf("Warning: no sidecar configured, executing locally")
 	ctx, cancel := newTimeoutContext(60 * time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	var env []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "KUBERNETES_") {
+			env = append(env, e)
+		}
+	}
+	env = append(env, "KUBECONFIG=/dev/null")
+	cmd.Env = env
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

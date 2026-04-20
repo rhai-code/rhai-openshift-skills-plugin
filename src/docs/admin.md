@@ -55,6 +55,21 @@ When creating or editing a scheduled task with a container image, the UI automat
 
 ---
 
+## Agent Shell Isolation
+
+The plugin pod runs two containers:
+
+| Container | Purpose | SA Token | Kube Access | Database Access |
+|-----------|---------|----------|-------------|-----------------|
+| **plugin** | Go backend, API server, scheduler | Projected token at non-standard path | Yes (manages executor pods, auth) | Yes (PVC mounted) |
+| **agent-shell** | LLM agent shell commands (chat and LLM-only scheduled tasks) | None | None | None |
+
+When the LLM agent executes shell commands (via the `shell` tool), they run inside the `agent-shell` sidecar container which has **no Kubernetes service account token mounted**, **no access to the Kubernetes API**, and **no access to the application database**. The SQLite data PVC is only mounted in the `plugin` container. This prevents the LLM from accessing cluster resources, reading secrets, reading API keys or session data, or performing privileged operations — even if it attempts to construct its own kubeconfig or call the API directly.
+
+Container-based scheduled tasks (with a container image specified) run in separate executor pods with their own ServiceAccount, unaffected by this isolation.
+
+---
+
 ## Admin-Only Features
 
 | Feature | Location |

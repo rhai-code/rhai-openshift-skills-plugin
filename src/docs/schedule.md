@@ -79,7 +79,7 @@ This keeps the plugin pod clean and allows per-task RBAC via ServiceAccount sele
 
 ### Without Container Image (LLM-only)
 
-When no container image is specified, the agent loop runs commands directly in the plugin pod using the local shell.
+When no container image is specified, the agent loop runs commands in an isolated sidecar container within the plugin pod. This sidecar has **no Kubernetes credentials** — the LLM cannot access the cluster API, read secrets, or perform privileged operations. See [Agent Shell Isolation](admin) for details.
 
 ---
 

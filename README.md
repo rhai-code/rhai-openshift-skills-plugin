@@ -74,6 +74,10 @@ oc -n <target-namespace> create rolebinding openshift-skills-plugin-pod-manager 
 
 The Schedule UI will warn you if the plugin lacks permissions in the selected namespace and show the exact command to run.
 
+### Agent Shell Isolation
+
+The plugin pod runs two containers. The Go backend (`plugin`) has a projected SA token for managing executor pods and authentication, and the application database (SQLite PVC) mounted. The LLM agent's shell commands run in a separate sidecar container (`agent-shell`) that has **no Kubernetes service account token**, **no cluster API access**, and **no access to the application database**. This prevents the LLM from accessing secrets, reading API keys or session data, deleting resources, or performing any privileged operations against the cluster.
+
 ## Simple Demo
 
 1. Deploy the helm chart

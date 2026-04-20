@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	authzv1 "k8s.io/api/authorization/v1"
@@ -26,7 +27,15 @@ var (
 
 func Init() error {
 	var err error
-	restConfig, err = rest.InClusterConfig()
+
+	tokenPath := os.Getenv("KUBE_SA_TOKEN_PATH")
+	caPath := os.Getenv("KUBE_SA_CA_PATH")
+	if tokenPath != "" && caPath != "" {
+		// Use projected SA token at a non-standard path (hidden from agent shell)
+		restConfig, err = buildInClusterConfig(tokenPath, caPath)
+	} else {
+		restConfig, err = rest.InClusterConfig()
+	}
 	if err != nil {
 		return fmt.Errorf("get in-cluster config: %w", err)
 	}
@@ -38,10 +47,33 @@ func Init() error {
 	return nil
 }
 
+func buildInClusterConfig(tokenPath, caPath string) (*rest.Config, error) {
+	host := os.Getenv("KUBERNETES_SERVICE_HOST")
+	port := os.Getenv("KUBERNETES_SERVICE_PORT")
+	if host == "" || port == "" {
+		return nil, fmt.Errorf("KUBERNETES_SERVICE_HOST/PORT not set")
+	}
+	return &rest.Config{
+		Host:            "https://" + host + ":" + port,
+		BearerTokenFile: tokenPath,
+		TLSClientConfig: rest.TLSClientConfig{
+			CAFile: caPath,
+		},
+	}, nil
+}
+
 // ExecutorPod represents a running pod that the agent can exec commands into.
 type ExecutorPod struct {
 	Name      string
 	Namespace string
+	Container string // defaults to "executor" if empty
+}
+
+func (ep *ExecutorPod) containerName() string {
+	if ep.Container != "" {
+		return ep.Container
+	}
+	return "executor"
 }
 
 // CreateExecutorPod creates a long-lived pod with the given image and SA
@@ -113,7 +145,7 @@ func ExecCommand(ep *ExecutorPod, command string, timeout time.Duration) (string
 		Namespace(ep.Namespace).
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
-			Container: "executor",
+			Container: ep.containerName(),
 			Command:   []string{"sh", "-c", command},
 			Stdout:    true,
 			Stderr:    true,

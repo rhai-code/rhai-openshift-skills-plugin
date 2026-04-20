@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -43,11 +44,31 @@ var (
 
 func initAuthClient() {
 	authOnce.Do(func() {
-		config, err := rest.InClusterConfig()
-		if err != nil {
-			authInitErr = err
-			log.Printf("Warning: auth client not available (RBAC won't work): %v", err)
-			return
+		var config *rest.Config
+		var err error
+
+		tokenPath := os.Getenv("KUBE_SA_TOKEN_PATH")
+		caPath := os.Getenv("KUBE_SA_CA_PATH")
+		if tokenPath != "" && caPath != "" {
+			host := os.Getenv("KUBERNETES_SERVICE_HOST")
+			port := os.Getenv("KUBERNETES_SERVICE_PORT")
+			if host == "" || port == "" {
+				authInitErr = fmt.Errorf("KUBERNETES_SERVICE_HOST/PORT not set")
+				log.Printf("Warning: auth client not available: %v", authInitErr)
+				return
+			}
+			config = &rest.Config{
+				Host:            "https://" + host + ":" + port,
+				BearerTokenFile: tokenPath,
+				TLSClientConfig: rest.TLSClientConfig{CAFile: caPath},
+			}
+		} else {
+			config, err = rest.InClusterConfig()
+			if err != nil {
+				authInitErr = err
+				log.Printf("Warning: auth client not available (RBAC won't work): %v", err)
+				return
+			}
 		}
 		authClient, err = kubernetes.NewForConfig(config)
 		if err != nil {

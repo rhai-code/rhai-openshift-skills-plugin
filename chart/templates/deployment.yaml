@@ -22,6 +22,7 @@ spec:
         app.kubernetes.io/component: plugin
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      automountServiceAccountToken: false
       containers:
         - name: plugin
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -47,6 +48,16 @@ spec:
                   fieldPath: spec.serviceAccountName
             - name: PLUGIN_NAME
               value: {{ .Values.plugin.name }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: AGENT_SHELL_CONTAINER
+              value: agent-shell
+            - name: KUBE_SA_TOKEN_PATH
+              value: /var/run/kube-sa/token
+            - name: KUBE_SA_CA_PATH
+              value: /var/run/kube-sa/ca.crt
             {{- if .Values.tls.enabled }}
             - name: TLS_CERT_FILE
               value: /var/serving-cert/tls.crt
@@ -78,6 +89,9 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           volumeMounts:
+            - name: kube-sa-token
+              readOnly: true
+              mountPath: /var/run/kube-sa
             {{- if .Values.persistence.enabled }}
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
@@ -95,7 +109,41 @@ spec:
                 - ALL
             seccompProfile:
               type: RuntimeDefault
+        # Sidecar for agent shell execution — no SA token, no kube credentials
+        - name: agent-shell
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sleep", "infinity"]
+          env:
+            - name: KUBECONFIG
+              value: /dev/null
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
       volumes:
+        - name: kube-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
         {{- if .Values.persistence.enabled }}
         - name: data
           persistentVolumeClaim:
