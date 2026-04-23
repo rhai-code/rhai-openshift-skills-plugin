@@ -575,6 +575,15 @@ func CreateScheduledTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Authorize: if a container image is set, verify the user has pod permissions in the target namespace
+	if req.ContainerImage != "" {
+		allowed, missing := CheckUserNamespaceAccess(user, req.Namespace)
+		if !allowed {
+			httpError(w, http.StatusForbidden, "you do not have permission to "+strings.Join(missing, ", ")+" in namespace "+req.Namespace)
+			return
+		}
+	}
+
 	db := database.GetDB()
 	if req.Temperature <= 0 {
 		req.Temperature = 0.7
@@ -631,6 +640,19 @@ func UpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
 		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		if _, err := parser.Parse(req.Schedule); err != nil {
 			httpError(w, http.StatusBadRequest, "invalid cron schedule: "+err.Error())
+			return
+		}
+	}
+
+	// Authorize: if a container image is set, verify the user has pod permissions in the target namespace
+	if req.ContainerImage != "" {
+		ns := req.Namespace
+		if ns == "" {
+			ns = "default"
+		}
+		allowed, missing := CheckUserNamespaceAccess(user, ns)
+		if !allowed {
+			httpError(w, http.StatusForbidden, "you do not have permission to "+strings.Join(missing, ", ")+" in namespace "+ns)
 			return
 		}
 	}

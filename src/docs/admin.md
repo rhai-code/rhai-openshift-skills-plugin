@@ -43,6 +43,14 @@ Skills and MaaS endpoints can be shared globally via the **Share globally** togg
 
 ## Namespace Permissions for Scheduled Tasks
 
+### User Authorization
+
+When a user creates or updates a scheduled task with a container image, the backend performs a **SubjectAccessReview** against the user's identity to verify they have `create`, `exec`, and `delete` permissions on pods in the target namespace. If any permission is missing, the request is rejected with a 403 error listing the specific missing permissions.
+
+This prevents privilege escalation where a user could specify a privileged namespace and service account, relying on the plugin's service account to create the executor pod on their behalf.
+
+### Plugin Service Account Permissions
+
 The plugin service account has pod management permissions (create, exec, delete) only in its own namespace by default. To run container-based scheduled tasks in other namespaces, an admin must grant access:
 
 ```bash
@@ -52,6 +60,8 @@ oc -n <target-namespace> create rolebinding openshift-skills-plugin-pod-manager 
 ```
 
 When creating or editing a scheduled task with a container image, the UI automatically checks whether the plugin has the required permissions in the selected namespace. If not, a warning is displayed with the exact command to run.
+
+<div class="alert alert-info"><strong>Two-level authorization:</strong> Both checks must pass for a container task to work. The user must have pod permissions in the namespace (enforced at task creation/update time), and the plugin service account must also have pod permissions there (checked at runtime). This ensures neither the user nor the plugin can escalate privileges independently.</div>
 
 ---
 

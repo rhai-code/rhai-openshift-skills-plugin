@@ -75,7 +75,9 @@ When a container image is specified, the task:
 
 This keeps the plugin pod clean and allows per-task RBAC via ServiceAccount selection.
 
-<div class="alert alert-warning">The plugin service account must have pod management permissions in the target namespace. If it doesn't, a warning will appear in the form with the exact <code>oc</code> command to grant access. See <a href="admin">Administration</a> for details.</div>
+<div class="alert alert-warning"><strong>User authorization:</strong> When you create or update a container task, the backend verifies that <em>you</em> have permissions to create, exec into, and delete pods in the target namespace. If you lack any of these permissions, the request is rejected with a 403 error listing the missing permissions. This prevents users from scheduling tasks in privileged namespaces they don't have access to.</div>
+
+<div class="alert alert-warning">The plugin service account must <em>also</em> have pod management permissions in the target namespace. If it doesn't, a warning will appear in the form with the exact <code>oc</code> command to grant access. See <a href="admin">Administration</a> for details.</div>
 
 ### Without Container Image (LLM-only)
 

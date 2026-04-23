@@ -188,3 +188,48 @@ func authorizeResource(w http.ResponseWriter, user *UserInfo, resourceOwner stri
 	httpError(w, http.StatusForbidden, "access denied")
 	return false
 }
+
+// CheckUserNamespaceAccess verifies that the user has permissions to create and
+// exec into pods in the target namespace via SubjectAccessReview. This prevents
+// privilege escalation where a user schedules a task in a namespace they don't
+// have access to, relying on the plugin SA to create the pod on their behalf.
+func CheckUserNamespaceAccess(user *UserInfo, namespace string) (allowed bool, missing []string) {
+	initAuthClient()
+	if authClient == nil {
+		return true, nil
+	}
+
+	ctx := context.Background()
+	checks := []struct {
+		resource    string
+		subresource string
+		verb        string
+		label       string
+	}{
+		{"pods", "", "create", "create pods"},
+		{"pods", "exec", "create", "exec into pods"},
+		{"pods", "", "delete", "delete pods"},
+	}
+
+	for _, c := range checks {
+		sar, err := authClient.AuthorizationV1().SubjectAccessReviews().Create(ctx,
+			&authorizationv1.SubjectAccessReview{
+				Spec: authorizationv1.SubjectAccessReviewSpec{
+					User:   user.Username,
+					Groups: user.Groups,
+					ResourceAttributes: &authorizationv1.ResourceAttributes{
+						Namespace:   namespace,
+						Verb:        c.verb,
+						Group:       "",
+						Resource:    c.resource,
+						Subresource: c.subresource,
+					},
+				},
+			}, metav1.CreateOptions{})
+		if err != nil || !sar.Status.Allowed {
+			missing = append(missing, c.label)
+		}
+	}
+
+	return len(missing) == 0, missing
+}
